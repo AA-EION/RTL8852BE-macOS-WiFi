@@ -165,12 +165,11 @@ final class AppModel {
 
         var st = RTL8852BEStatus()
         guard rtl_get_status(conn, &st) == 0 else { return }
-        macAddress = Self.mac(st.mac)
-        bssid = Self.mac(st.bssid)
-        ssid = withUnsafeBytes(of: st.ssid) { String(cString: $0.bindMemory(to: CChar.self).baseAddress!) }
+        bssid = Self.mac(st.connected_bssid)
+        ssid = withUnsafeBytes(of: st.connected_ssid) { String(cString: $0.bindMemory(to: CChar.self).baseAddress!) }
         channel = Int(st.channel)
         rssi = Int(st.rssi)
-        antenna = st.antenna == 2 ? 2 : 1
+        antenna = st.ant_mode == 2 ? 2 : 1
 
         if st.state != lastState {
             if st.state == 5 {
@@ -190,7 +189,10 @@ final class AppModel {
         }
 
         var diagnostics = RTL8852BEDiag()
-        if rtl_get_diag(conn, &diagnostics) == 0 { diag = diagnostics }
+        if rtl_get_diag(conn, &diagnostics) == 0 {
+            diag = diagnostics
+            macAddress = Self.mac(diagnostics.mac_addr)
+        }
 
         updateInterface()
     }

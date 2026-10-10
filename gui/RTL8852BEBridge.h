@@ -85,7 +85,7 @@ static inline int rtl_hardware_present(void) {
     /* Same match as the kext personality; ACPI often renames the device (e.g. PXSX). */
     CFMutableDictionaryRef match = IOServiceMatching("IOPCIDevice");
     if (!match) return 0;
-    CFDictionarySetValue(match, CFSTR("IOPCIMatch"), CFSTR("0xb72310ec"));
+    CFDictionarySetValue(match, CFSTR("IOPCIMatch"), CFSTR("0xb85210ec"));
     io_service_t service = IOServiceGetMatchingService(kIOMainPortDefault, match);
     if (service == IO_OBJECT_NULL) return 0;
     IOObjectRelease(service);
