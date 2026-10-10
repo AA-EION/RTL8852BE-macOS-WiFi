@@ -54,8 +54,13 @@ final class TestDriver: WirelessDriverClient, @unchecked Sendable {
 
 @main
 struct AppRegressions {
+    private static func stage(_ name: String) {
+        FileHandle.standardError.write(Data((name + "\n").utf8))
+    }
+
     @MainActor
     static func main() async throws {
+        stage("App model: initialization and refresh")
         precondition(AppModel.firmwareVersion(0) == "Unknown")
         precondition(AppModel.firmwareVersion(0x001b2001) == "0.27.32.1")
         let driver = TestDriver()
@@ -63,15 +68,18 @@ struct AppRegressions {
         model.refresh()
         precondition(model.driverLoaded && model.phase == .disconnected)
         precondition(model.macAddress == "02:01:02:03:04:05" && model.channel == 36)
+        stage("App model: scan")
         await model.scan()
         precondition(model.networks == [driver.network] && !model.isScanning)
         driver.configure(scanFailure: true)
         await model.scan()
         precondition(!model.isScanning && model.alertMessage != nil)
         driver.configure()
+        stage("App model: join")
         await model.join(driver.network, password: "goodpassword")
         precondition(model.phase == .connected && !model.isBusy && model.joiningNetwork == nil)
         precondition(model.ssid == driver.network.ssid && model.antenna == 0)
+        stage("App model: disconnect and driver loss")
         driver.configure(disconnectFailure: true)
         await model.disconnect()
         precondition(model.phase == .connected && model.alertMessage != nil && !model.isBusy)
@@ -87,6 +95,7 @@ struct AppRegressions {
         model.refresh()
         precondition(model.driverLoaded && model.phase == .disconnected)
 
+        stage("App ABI: UTF-8 fields and scan results")
         // UTF-8 byte lengths, not Swift character counts, define the IPC fields.
         do {
             try IOKitDriverClient().join(driver.network, password: String(repeating: "é", count: 40))
@@ -106,7 +115,7 @@ struct AppRegressions {
             }
             aps[2].bssid = (2, 17, 34, 51, 68, 86)
             aps[2].channel = 1
-            withUnsafeMutableBytes(of: &aps[2].ssid) { $0.initializeMemory(as: UInt8.self, repeating: 65) }
+            _ = withUnsafeMutableBytes(of: &aps[2].ssid) { $0.initializeMemory(as: UInt8.self, repeating: 65) }
         }
         let networks = IOKitDriverClient.networks(raw)
         precondition(networks.count == 1 && networks[0].rssi == -48 && networks[0].ssid == "Nearby")

@@ -50,11 +50,11 @@ app:
 
 test-app:
 	@mkdir -p build
-	swiftc -parse-as-library -swift-version 5 -target x86_64-apple-macosx14.0 \
+	swiftc -parse-as-library -swift-version 5 -target $(shell uname -m)-apple-macosx14.0 \
 		-import-objc-header gui/RTL8852BEBridge.h -framework AppKit -framework IOKit \
 		gui/Sources/AppModel.swift gui/Sources/DriverClient.swift gui/Sources/Vendor.swift \
 		tests/test_app.swift -o build/test_app
-	./build/test_app
+	python3 tests/run_app_tests.py
 
 build/%.o: src/%.cpp
 	@mkdir -p build
