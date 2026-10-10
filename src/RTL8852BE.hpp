@@ -117,7 +117,8 @@ private:
     static IOReturn gatedDiagWriteRF(OSObject *owner, void *arg0, void *arg1, void *arg2, void *arg3);
     static IOReturn gatedTriggerIQK(OSObject *owner, void *arg0, void *arg1, void *arg2, void *arg3);
 
-    // Hardware initialization
+    // Hardware initialization & teardown
+    void cleanupResources();
     bool hwInit();
     void hwDisable();
     bool pciWakeAndConfigure();

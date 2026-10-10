@@ -93,6 +93,10 @@ jobs:
           clang++ -std=c++17 -Wall -Wextra -fsanitize=address,undefined -Isrc tests/test_crypto_bounds.cpp src/RTL8852BE_crypto.cpp -o build_crypto_bounds
           ./build_crypto_bounds
 
+      - name: Run Boot Config Test
+        run: |
+          python3 tests/test_boot_config.py
+
       - name: Run Full Mock Test Suite (57 Tests)
         run: |
           make -C tests test

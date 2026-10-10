@@ -50,7 +50,12 @@ build\test_runner.exe
 if errorlevel 1 goto error
 
 echo.
-echo [+] All Contract, Crypto, and Mock Suite Tests Passed Successfully!
+echo [*] Running python tests\test_boot_config.py...
+python tests\test_boot_config.py
+if errorlevel 1 goto error
+
+echo.
+echo [+] All Contract, Crypto, Mock Suite, and Boot Config Tests Passed Successfully!
 exit /b 0
 
 :error

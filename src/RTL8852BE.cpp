@@ -81,115 +81,33 @@ bool RTL8852BE::init(OSDictionary *properties) {
     return true;
 }
 
-bool RTL8852BE::start(IOService *provider) {
-    IOLog("RTL8852BE: Starting driver for Realtek Wi-Fi 6 PCIe adapter...\n");
-    if (!super::start(provider)) return false;
-
-    fPCIDevice = OSDynamicCast(IOPCIDevice, provider);
-    if (!fPCIDevice) {
-        IOLog("RTL8852BE: Provider is not an IOPCIDevice!\n");
-        return false;
-    }
-    fPCIDevice->retain();
-
-    // Match device ID and subsystem
-    uint16_t vendor = fPCIDevice->configRead16(0x00);
-    fPciDeviceId = fPCIDevice->configRead16(0x02);
-    fSubsysVendor = fPCIDevice->configRead16(0x2C);
-    fSubsysDevice = fPCIDevice->configRead16(0x2E);
-
-    IOLog("RTL8852BE: Detected PCI ID %04x:%04x (Subsystem %04x:%04x)\n",
-          vendor, fPciDeviceId, fSubsysVendor, fSubsysDevice);
-
-    if (vendor != RTL_PCI_VENDOR_ID || (fPciDeviceId != RTL8852BE_PCI_DEVICE_ID && fPciDeviceId != RTL8852BE_PCI_DEVICE_ID_ALT)) {
-        IOLog("RTL8852BE: Hardware mismatch!\n");
-        return false;
-    }
-
-    if (fSubsysVendor == LENOVO_PCI_SUBVENDOR_ID && fSubsysDevice == LENOVO_LOQ_82XV_SUBSYS_ID) {
-        IOLog("RTL8852BE: Target system matched: Lenovo LOQ 15IRH8 (Type 82XV)\n");
-    }
-
-    // Map BAR2 MMIO
-    fMMIOMap = fPCIDevice->mapDeviceMemoryWithRegister(kIOPCIConfigBaseAddress2);
-    if (!fMMIOMap) {
-        IOLog("RTL8852BE: Failed to map BAR2 MMIO!\n");
-        return false;
-    }
-    fMMIOBase = (volatile uint8_t *)fMMIOMap->getVirtualAddress();
-
-    // Setup WorkLoop and CommandGate
-    fWorkLoop = getWorkLoop();
-    if (!fWorkLoop) {
-        IOLog("RTL8852BE: Failed to obtain IOWorkLoop!\n");
-        return false;
-    }
-    fWorkLoop->retain();
-
-    fCommandGate = IOCommandGate::commandGate(this);
-    if (!fCommandGate || fWorkLoop->addEventSource(fCommandGate) != kIOReturnSuccess) {
-        IOLog("RTL8852BE: Failed to create IOCommandGate!\n");
-        return false;
-    }
-
-    // Timer for scan dwell
-    fScanTimer = IOTimerEventSource::timerEventSource(this, &RTL8852BE::scanTimerAction);
-    if (!fScanTimer || fWorkLoop->addEventSource(fScanTimer) != kIOReturnSuccess) {
-        IOLog("RTL8852BE: Failed to create IOTimerEventSource!\n");
-        return false;
-    }
-
-    // Setup MSI or Pin Interrupt
-    fInterruptSource = IOFilterInterruptEventSource::filterInterruptEventSource(
-        this, &RTL8852BE::interruptAction, &RTL8852BE::interruptFilter, fPCIDevice);
-    if (!fInterruptSource || fWorkLoop->addEventSource(fInterruptSource) != kIOReturnSuccess) {
-        IOLog("RTL8852BE: Failed to create IOFilterInterruptEventSource!\n");
-        return false;
-    }
-    fInterruptSource->enable();
-
-    // Hardware Bring-up
-    if (!hwInit()) {
-        IOLog("RTL8852BE: hwInit failed at stage %u!\n", fInitStage);
-        return false;
-    }
-
-    // Attach Network Interface
-    if (!attachInterface((IONetworkInterface**)&fNetif, false)) {
-        IOLog("RTL8852BE: attachInterface failed!\n");
-        return false;
-    }
-
-    fNetif->registerService();
-    registerService();
-    IOLog("RTL8852BE: Successfully started! MAC: %02x:%02x:%02x:%02x:%02x:%02x\n",
-          fCalib.mac_addr[0], fCalib.mac_addr[1], fCalib.mac_addr[2],
-          fCalib.mac_addr[3], fCalib.mac_addr[4], fCalib.mac_addr[5]);
-    return true;
-}
-
-void RTL8852BE::stop(IOService *provider) {
-    IOLog("RTL8852BE: Stopping driver...\n");
-    hwDisable();
-
-    if (fInterruptSource) {
-        fInterruptSource->disable();
-        fWorkLoop->removeEventSource(fInterruptSource);
-        fInterruptSource->release();
-        fInterruptSource = nullptr;
-    }
+void RTL8852BE::cleanupResources() {
+    disableInterrupts();
 
     if (fScanTimer) {
         fScanTimer->cancelTimeout();
-        fWorkLoop->removeEventSource(fScanTimer);
+        if (fWorkLoop) fWorkLoop->removeEventSource(fScanTimer);
         fScanTimer->release();
         fScanTimer = nullptr;
     }
 
+    if (fInterruptSource) {
+        fInterruptSource->disable();
+        if (fWorkLoop) fWorkLoop->removeEventSource(fInterruptSource);
+        fInterruptSource->release();
+        fInterruptSource = nullptr;
+    }
+
     if (fCommandGate) {
-        fWorkLoop->removeEventSource(fCommandGate);
+        if (fWorkLoop) fWorkLoop->removeEventSource(fCommandGate);
         fCommandGate->release();
         fCommandGate = nullptr;
+    }
+
+    if (fHwReady || fInitStage > 0) {
+        hwDisable();
+    } else {
+        freeDMARings();
     }
 
     if (fNetif) {
@@ -210,14 +128,125 @@ void RTL8852BE::stop(IOService *provider) {
     }
 
     if (fPCIDevice) {
+        fPCIDevice->setBusMasterEnable(false);
         fPCIDevice->release();
         fPCIDevice = nullptr;
     }
+}
 
+bool RTL8852BE::start(IOService *provider) {
+    IOLog("RTL8852BE: Starting driver for Realtek Wi-Fi 6 PCIe adapter...\n");
+    if (!super::start(provider)) return false;
+
+    fPCIDevice = OSDynamicCast(IOPCIDevice, provider);
+    if (!fPCIDevice) {
+        IOLog("RTL8852BE: Provider is not an IOPCIDevice!\n");
+        return false;
+    }
+    fPCIDevice->retain();
+
+    // Revoke DMA inherited from firmware/an earlier boot before touching BARs
+    fPCIDevice->setBusMasterEnable(false);
+
+    // Match device ID and subsystem
+    uint16_t vendor = fPCIDevice->configRead16(0x00);
+    fPciDeviceId = fPCIDevice->configRead16(0x02);
+    fSubsysVendor = fPCIDevice->configRead16(0x2C);
+    fSubsysDevice = fPCIDevice->configRead16(0x2E);
+
+    IOLog("RTL8852BE: Detected PCI ID %04x:%04x (Subsystem %04x:%04x)\n",
+          vendor, fPciDeviceId, fSubsysVendor, fSubsysDevice);
+
+    if (vendor != RTL_PCI_VENDOR_ID || (fPciDeviceId != RTL8852BE_PCI_DEVICE_ID && fPciDeviceId != RTL8852BE_PCI_DEVICE_ID_ALT)) {
+        IOLog("RTL8852BE: Hardware mismatch!\n");
+        cleanupResources();
+        return false;
+    }
+
+    if (fSubsysVendor == LENOVO_PCI_SUBVENDOR_ID && fSubsysDevice == LENOVO_LOQ_82XV_SUBSYS_ID) {
+        IOLog("RTL8852BE: Target system matched: Lenovo LOQ 15IRH8 (Type 82XV)\n");
+    }
+
+    // Wake function to D0, disable ASPM, and enable Memory & IO decoding before mapping BAR2
+    if (!pciWakeAndConfigure()) {
+        IOLog("RTL8852BE: Failed to wake and configure PCI function!\n");
+        cleanupResources();
+        return false;
+    }
+
+    // Map BAR2 MMIO
+    fMMIOMap = fPCIDevice->mapDeviceMemoryWithRegister(kIOPCIConfigBaseAddress2);
+    if (!fMMIOMap || !fMMIOMap->getVirtualAddress()) {
+        IOLog("RTL8852BE: Failed to map BAR2 MMIO!\n");
+        cleanupResources();
+        return false;
+    }
+    fMMIOBase = (volatile uint8_t *)fMMIOMap->getVirtualAddress();
+
+    // Setup WorkLoop and CommandGate
+    fWorkLoop = getWorkLoop();
+    if (!fWorkLoop) {
+        IOLog("RTL8852BE: Failed to obtain IOWorkLoop!\n");
+        cleanupResources();
+        return false;
+    }
+    fWorkLoop->retain();
+
+    fCommandGate = IOCommandGate::commandGate(this);
+    if (!fCommandGate || fWorkLoop->addEventSource(fCommandGate) != kIOReturnSuccess) {
+        IOLog("RTL8852BE: Failed to create IOCommandGate!\n");
+        cleanupResources();
+        return false;
+    }
+
+    // Timer for scan dwell
+    fScanTimer = IOTimerEventSource::timerEventSource(this, &RTL8852BE::scanTimerAction);
+    if (!fScanTimer || fWorkLoop->addEventSource(fScanTimer) != kIOReturnSuccess) {
+        IOLog("RTL8852BE: Failed to create IOTimerEventSource!\n");
+        cleanupResources();
+        return false;
+    }
+
+    // Setup MSI or Pin Interrupt
+    fInterruptSource = IOFilterInterruptEventSource::filterInterruptEventSource(
+        this, &RTL8852BE::interruptAction, &RTL8852BE::interruptFilter, fPCIDevice);
+    if (!fInterruptSource || fWorkLoop->addEventSource(fInterruptSource) != kIOReturnSuccess) {
+        IOLog("RTL8852BE: Failed to create IOFilterInterruptEventSource!\n");
+        cleanupResources();
+        return false;
+    }
+    fInterruptSource->enable();
+
+    // Hardware Bring-up
+    if (!hwInit()) {
+        IOLog("RTL8852BE: hwInit failed at stage %u!\n", fInitStage);
+        cleanupResources();
+        return false;
+    }
+
+    // Attach Network Interface
+    if (!attachInterface((IONetworkInterface**)&fNetif, false)) {
+        IOLog("RTL8852BE: attachInterface failed!\n");
+        cleanupResources();
+        return false;
+    }
+
+    fNetif->registerService();
+    registerService();
+    IOLog("RTL8852BE: Successfully started! MAC: %02x:%02x:%02x:%02x:%02x:%02x\n",
+          fCalib.mac_addr[0], fCalib.mac_addr[1], fCalib.mac_addr[2],
+          fCalib.mac_addr[3], fCalib.mac_addr[4], fCalib.mac_addr[5]);
+    return true;
+}
+
+void RTL8852BE::stop(IOService *provider) {
+    IOLog("RTL8852BE: Stopping driver...\n");
+    cleanupResources();
     super::stop(provider);
 }
 
 void RTL8852BE::free() {
+    cleanupResources();
     super::free();
 }
 
@@ -377,8 +406,7 @@ bool RTL8852BE::pciWakeAndConfigure() {
         fPCIDevice->configWrite16(pcieCap + PCI_EXP_LNKCTL_OFFSET, lnkctl);
     }
 
-    // Enable Bus Mastering, IO space, and Memory space
-    fPCIDevice->setBusMasterEnable(true);
+    // Enable IO space and Memory space decoding (Bus Mastering enabled after DMA rings allocated)
     fPCIDevice->setMemoryEnable(true);
     fPCIDevice->setIOEnable(true);
     IOSleep(2);
@@ -610,24 +638,36 @@ bool RTL8852BE::initDMARings() {
     IOLog("RTL8852BE: Allocating TXBD and RXBD DMA rings (32-bit coherent mask)...\n");
 
     // Allocate TX Ring (128 entries x 8 bytes = 1024 bytes)
-    if (!allocDMA(fTxRingDma, RTL8852BE_TX_DESC_COUNT * sizeof(Rtw89TxBd), 256)) return false;
+    if (!allocDMA(fTxRingDma, RTL8852BE_TX_DESC_COUNT * sizeof(Rtw89TxBd), 256)) {
+        freeDMARings();
+        return false;
+    }
     fTxRingVirt = (Rtw89TxBd *)fTxRingDma.virt;
 
     // Allocate TX Buffers
     for (int i = 0; i < RTL8852BE_TX_DESC_COUNT; i++) {
-        if (!allocDMA(fTxBufDma[i], RTL8852BE_TX_BUF_SIZE, 128)) return false;
+        if (!allocDMA(fTxBufDma[i], RTL8852BE_TX_BUF_SIZE, 128)) {
+            freeDMARings();
+            return false;
+        }
         fTxRingVirt[i].set_dma((uint32_t)fTxBufDma[i].ioaddr);
         fTxRingVirt[i].set_length(0);
         fTxRingVirt[i].set_ls(true);
     }
 
     // Allocate RX Ring (128 entries x 8 bytes = 1024 bytes)
-    if (!allocDMA(fRxRingDma, RTL8852BE_RX_DESC_COUNT * sizeof(Rtw89RxBd), 256)) return false;
+    if (!allocDMA(fRxRingDma, RTL8852BE_RX_DESC_COUNT * sizeof(Rtw89RxBd), 256)) {
+        freeDMARings();
+        return false;
+    }
     fRxRingVirt = (Rtw89RxBd *)fRxRingDma.virt;
 
     // Allocate RX Buffers
     for (int i = 0; i < RTL8852BE_RX_DESC_COUNT; i++) {
-        if (!allocDMA(fRxBufDma[i], RTL8852BE_RX_BUF_SIZE, 128)) return false;
+        if (!allocDMA(fRxBufDma[i], RTL8852BE_RX_BUF_SIZE, 128)) {
+            freeDMARings();
+            return false;
+        }
         fRxRingVirt[i].set_dma((uint32_t)fRxBufDma[i].ioaddr);
         fRxRingVirt[i].set_buf_size(RTL8852BE_RX_BUF_SIZE);
     }
@@ -658,18 +698,22 @@ bool RTL8852BE::initDMARings() {
 }
 
 void RTL8852BE::freeDMARings() {
-    // Disable HCI
-    mmio_write32_mask(R_AX_PCIE_INIT_CFG1, B_AX_TXHCI_EN | B_AX_RXHCI_EN, 0);
+    // Disable HCI if MMIO is mapped
+    if (fMMIOBase) {
+        mmio_write32_mask(R_AX_PCIE_INIT_CFG1, B_AX_TXHCI_EN | B_AX_RXHCI_EN, 0);
+    }
 
     for (int i = 0; i < RTL8852BE_TX_DESC_COUNT; i++) {
         freeDMA(fTxBufDma[i]);
     }
     freeDMA(fTxRingDma);
+    fTxRingVirt = nullptr;
 
     for (int i = 0; i < RTL8852BE_RX_DESC_COUNT; i++) {
         freeDMA(fRxBufDma[i]);
     }
     freeDMA(fRxRingDma);
+    fRxRingVirt = nullptr;
 }
 
 // Channel Setting
@@ -778,6 +822,7 @@ bool RTL8852BE::hwInit() {
 
     fInitStage = 6;
     if (!initDMARings()) return false;
+    fPCIDevice->setBusMasterEnable(true);
 
     fInitStage = 7;
     setChannel(1);
