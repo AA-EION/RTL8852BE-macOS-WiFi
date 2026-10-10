@@ -222,7 +222,7 @@ void RTL8852BE::free() {
 }
 
 IOOutputQueue *RTL8852BE::createOutputQueue() {
-    fOutputQueue = IOGatedOutputQueue::outputQueue(this, getWorkLoop());
+    fOutputQueue = IOGatedOutputQueue::withTarget(this, getWorkLoop(), 256);
     return fOutputQueue;
 }
 
@@ -555,42 +555,34 @@ bool RTL8852BE::initBBAndRF() {
 
 // DMA Ring Allocation & Programming
 bool RTL8852BE::allocDMA(RTLDmaBuf &buf, size_t size, size_t alignment) {
+    memset(&buf, 0, sizeof(buf));
     buf.mem = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(
-        kernel_task, kIODirectionInOut | kIOMemoryPhysicallyContiguous, size, 0xFFFFFFFFULL);
+        kernel_task, kIODirectionInOut | kIOMemoryPhysicallyContiguous,
+        size, 0xFFFFFFFFULL & ~(uint64_t(alignment) - 1));
     if (!buf.mem) return false;
 
-    buf.cmd = IODMACommand::dmaCommand(nullptr, kIODMACommandContiguous);
-    if (!buf.cmd) {
-        buf.mem->release();
-        buf.mem = nullptr;
-        return false;
-    }
-
-    if (buf.cmd->setMemoryDescriptor(buf.mem) != kIOReturnSuccess) {
-        buf.cmd->release();
-        buf.mem->release();
-        buf.cmd = nullptr;
-        buf.mem = nullptr;
+    buf.cmd = IODMACommand::withSpecification(kIODMACommandOutputHost64, 32, size,
+                                              IODMACommand::kMapped, size, (UInt32)alignment);
+    if (!buf.cmd || buf.cmd->setMemoryDescriptor(buf.mem, true) != kIOReturnSuccess) {
+        freeDMA(buf);
         return false;
     }
 
     IODMACommand::Segment64 seg;
     UInt64 offset = 0;
     UInt32 numSeg = 1;
-    if (buf.cmd->gen64IOVMSegments(&offset, &seg, &numSeg) != kIOReturnSuccess || numSeg != 1) {
-        buf.cmd->release();
-        buf.mem->release();
-        buf.cmd = nullptr;
-        buf.mem = nullptr;
+    if (buf.cmd->gen64IOVMSegments(&offset, &seg, &numSeg) != kIOReturnSuccess ||
+        numSeg != 1 || seg.fLength < size ||
+        !rtlDmaRangeValid(seg.fIOVMAddr, (uint32_t)size, (uint32_t)alignment)) {
+        IOLog("RTL8852BE: DMA range validation failed for addr 0x%llx!\n", seg.fIOVMAddr);
+        freeDMA(buf);
         return false;
     }
 
+    buf.ioaddr = seg.fIOVMAddr;
     buf.virt = buf.mem->getBytesNoCopy();
-    buf.ioaddr = seg.fAddress;
     buf.size = size;
-
-    if (!rtlDmaRangeValid(buf.ioaddr, (uint32_t)size, (uint32_t)alignment)) {
-        IOLog("RTL8852BE: DMA range validation failed for addr 0x%llx!\n", buf.ioaddr);
+    if (!buf.virt) {
         freeDMA(buf);
         return false;
     }
@@ -706,12 +698,6 @@ bool RTL8852BE::setChannel(uint8_t channel) {
     return true;
 }
 
-// Antenna Mode
-IOReturn RTL8852BE::setAntennaMode(uint8_t ant) {
-    fAntennaMode = ant;
-    IOLog("RTL8852BE: Antenna mode set to %u (0=2x2 Auto, 1=Path A, 2=Path B)\n", ant);
-    return kIOReturnSuccess;
-}
 
 // Interrupt Management
 void RTL8852BE::enableInterrupts() {
@@ -1442,6 +1428,7 @@ IOReturn RTL8852BE::gatedSetAntenna(OSObject *owner, void *arg0, void *arg1, voi
     if (!me) return kIOReturnBadArgument;
     uint8_t ant = (uint8_t)(uintptr_t)arg0;
     me->fAntennaMode = ant;
+    IOLog("RTL8852BE: Antenna mode set to %u (0=2x2 Auto, 1=Path A, 2=Path B)\n", ant);
     return kIOReturnSuccess;
 }
 

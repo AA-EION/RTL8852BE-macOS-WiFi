@@ -8,6 +8,7 @@
 #include "mock_crypto.hpp"
 #include <cstdint>
 #include <cstddef>
+#include <cstring>
 #include <vector>
 #include <string>
 #include <array>
