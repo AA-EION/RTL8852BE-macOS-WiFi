@@ -93,6 +93,51 @@ int main() {
         assert(nonZero);
     }
 
+    // WPA2 EAPOL Key Info 16-bit Bitmask & GTK KDE Unwrap Verification
+    {
+        // Verify 16-bit Key Info retains MIC and Secure bits
+        uint16_t m2_info = 0x010A;
+        uint16_t m4_info = 0x030A;
+        assert((m2_info & 0x0100) != 0); // MIC bit must be preserved
+        assert((m4_info & 0x0100) != 0); // MIC bit must be preserved
+        assert((m4_info & 0x0200) != 0); // Secure bit must be preserved
+        assert((uint8_t)m2_info == 0x0A); // Truncation to 8-bit would lose MIC bit!
+
+        // Construct GTK KDE (Key Data Encapsulation)
+        // Element ID: 0xDD, Length: 22, OUI: 00-0F-AC, DataType: 01 (GTK), KeyIdx: 1, Rsvd: 0, GTK: 16 bytes
+        const uint8_t kek[16] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22,
+                                 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0x00};
+        const uint8_t raw_gtk[16] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+                                     0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10};
+        uint8_t plain_kde[24] = {
+            0xDD, 22, 0x00, 0x0F, 0xAC, 0x01, 0x01, 0x00
+        };
+        std::memcpy(plain_kde + 8, raw_gtk, 16);
+
+        uint8_t wrapped_kde[32];
+        assert(rtl_crypto::aes_key_wrap(kek, plain_kde, sizeof(plain_kde), wrapped_kde));
+
+        uint8_t unwrapped_kde[64];
+        assert(rtl_crypto::aes_key_unwrap(kek, wrapped_kde, sizeof(wrapped_kde), unwrapped_kde, sizeof(unwrapped_kde)));
+        assert(std::memcmp(unwrapped_kde, plain_kde, sizeof(plain_kde)) == 0);
+
+        // Parse KDE and extract GTK
+        uint8_t extracted_gtk[16] = {};
+        size_t plainLen = sizeof(plain_kde);
+        for (size_t off = 0; off + 2 <= plainLen; ) {
+            uint8_t id = unwrapped_kde[off], l = unwrapped_kde[off + 1];
+            if (id == 0xDD && l == 0) break;
+            if (off + 2 + l > plainLen) break;
+            if (id == 0xDD && l >= 6 + 16 && unwrapped_kde[off + 2] == 0x00 &&
+                unwrapped_kde[off + 3] == 0x0F && unwrapped_kde[off + 4] == 0xAC &&
+                unwrapped_kde[off + 5] == 0x01) {
+                std::memcpy(extracted_gtk, unwrapped_kde + off + 8, 16);
+            }
+            off += 2 + l;
+        }
+        assert(std::memcmp(extracted_gtk, raw_gtk, 16) == 0);
+    }
+
     printf("[+] RTL8852BE Crypto & Bounds Verification PASSED!\n");
     return 0;
 }

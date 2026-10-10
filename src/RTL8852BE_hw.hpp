@@ -20,7 +20,7 @@
 // PCIe Configuration Space Offsets
 #define PCI_CFG_COMMAND                  0x04
 #define PCI_CFG_BAR2                     0x18
-#define PCI_CFG_EXP_LNKCTL               0x10 // In PCI Express Capability
+#define PCI_EXP_LNKCTL_OFFSET            0x10 // Relative offset within IOPCIExpressCapability
 #define PCI_COMMAND_BUS_MASTER           (1 << 2)
 #define PCI_COMMAND_MEM_ENABLE           (1 << 1)
 
@@ -143,7 +143,7 @@
 
 // eFuse Structure Constants
 #define EFUSE_PHYSICAL_SIZE_AX           1024
-#define EFUSE_LOGICAL_SIZE_AX            1024
+#define EFUSE_LOGICAL_SIZE_AX            2048
 #define EFUSE_MAC_ADDR_OFFSET_PCIE       0x423
 #define EFUSE_XTAL_K_OFFSET              0x2DB
 #define EFUSE_RFE_TYPE_OFFSET            0x2EC

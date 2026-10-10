@@ -90,6 +90,7 @@ int main() {
     assert(RTL8852BE_PCI_DEVICE_ID_ALT == 0xB85B);
     assert(LENOVO_PCI_SUBVENDOR_ID == 0x17AA);
     assert(LENOVO_LOQ_82XV_SUBSYS_ID == 0x4853);
+    assert(PCI_EXP_LNKCTL_OFFSET == 0x10);
 
     // 3. 32-bit DMA Range & Physical Boundary Enforcement
     assert(rtlDmaRangeValid(0x10000000, 4096, 256));
@@ -121,6 +122,9 @@ int main() {
 
     // 5. eFuse Logical Stream Decoding Contract
     {
+        assert(EFUSE_LOGICAL_SIZE_AX == 2048);
+        assert(EFUSE_MAC_ADDR_OFFSET_PCIE + 6 <= EFUSE_LOGICAL_SIZE_AX);
+
         uint8_t phys[EFUSE_PHYSICAL_SIZE_AX];
         uint8_t log[EFUSE_LOGICAL_SIZE_AX];
         std::memset(phys, 0xFF, sizeof(phys));

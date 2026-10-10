@@ -2,10 +2,11 @@
 # Copyright (c) 2026 Issen Software Group
 
 SDK_PATH ?= $(shell xcrun --sdk macosx --show-sdk-path 2>/dev/null || echo "")
+MACOSX_VERSION_MIN ?= 12.0
 CXX ?= clang++
 CC ?= clang
 
-KEXT_CXXFLAGS := -arch x86_64 -mmacosx-version-min=26.5 -mkernel -fno-builtin -fno-common \
+KEXT_CXXFLAGS := -arch x86_64 -mmacosx-version-min=$(MACOSX_VERSION_MIN) -mkernel -fno-builtin -fno-common \
                  -fno-exceptions -fno-rtti -nostdinc -std=c++17 -O2 \
                  -DKERNEL -DKERNEL_PRIVATE -DDRIVER_PRIVATE -DAPPLE -DNeXT \
                  -Wno-deprecated-declarations \
@@ -13,13 +14,13 @@ KEXT_CXXFLAGS := -arch x86_64 -mmacosx-version-min=26.5 -mkernel -fno-builtin -f
                  -I"$(SDK_PATH)/System/Library/Frameworks/Kernel.framework/Headers" \
                  -Isrc -MMD -MP
 
-KEXT_CFLAGS   := -arch x86_64 -mmacosx-version-min=26.5 -mkernel -fno-builtin -fno-common \
+KEXT_CFLAGS   := -arch x86_64 -mmacosx-version-min=$(MACOSX_VERSION_MIN) -mkernel -fno-builtin -fno-common \
                  -nostdinc -O2 \
                  -DKERNEL -DKERNEL_PRIVATE -DDRIVER_PRIVATE -DAPPLE -DNeXT \
                  -isysroot "$(SDK_PATH)" \
                  -I"$(SDK_PATH)/System/Library/Frameworks/Kernel.framework/Headers"
 
-KEXT_LDFLAGS  := -arch x86_64 -mmacosx-version-min=26.5 -Wl,-kext -nostdlib \
+KEXT_LDFLAGS  := -arch x86_64 -mmacosx-version-min=$(MACOSX_VERSION_MIN) -Wl,-kext -nostdlib \
                  -lkmodc++ -lkmod -lcc_kext -isysroot "$(SDK_PATH)"
 
 KEXT_BUNDLE   := build/RTL8852BEWiFi.kext
@@ -58,8 +59,13 @@ cli: tools/rtl8852be_cli.cpp src/RTL8852BE_ipc.h
 	$(CXX) -arch x86_64 -std=c++17 -O2 -framework IOKit -framework CoreFoundation \
 		tools/rtl8852be_cli.cpp -o $(CLI_BIN)
 
-test: test-hardware test-crypto
+.PHONY: all kext cli test test-hardware test-crypto test-boot-config clean
+
+test: test-hardware test-crypto test-boot-config
 	$(MAKE) -C tests test
+
+test-boot-config:
+	python3 tests/test_boot_config.py
 
 test-hardware:
 	@mkdir -p build

@@ -57,6 +57,11 @@ bool RTL8852BE::init(OSDictionary *properties) {
     fTargetChannel = 1;
     fTxPN = 1;
     fRxPN = 0;
+    fRxPtkPN = 0;
+    memset(fRxGtkPN, 0, sizeof(fRxGtkPN));
+    memset(fGTK, 0, sizeof(fGTK));
+    fLastReplayCounter = 0;
+    fKeyInstalled = false;
     fSecured = false;
 
     fRxBytes = 0;
@@ -150,11 +155,12 @@ bool RTL8852BE::start(IOService *provider) {
     }
 
     // Attach Network Interface
-    if (!attachInterface(&fNetif)) {
+    if (!attachInterface((IONetworkInterface**)&fNetif, false)) {
         IOLog("RTL8852BE: attachInterface failed!\n");
         return false;
     }
 
+    fNetif->registerService();
     registerService();
     IOLog("RTL8852BE: Successfully started! MAC: %02x:%02x:%02x:%02x:%02x:%02x\n",
           fCalib.mac_addr[0], fCalib.mac_addr[1], fCalib.mac_addr[2],
@@ -188,6 +194,7 @@ void RTL8852BE::stop(IOService *provider) {
 
     if (fNetif) {
         detachInterface(fNetif);
+        fNetif->release();
         fNetif = nullptr;
     }
 
@@ -350,18 +357,31 @@ bool RTL8852BE::rf_write(uint8_t path, uint32_t addr, uint32_t mask, uint32_t va
 bool RTL8852BE::pciWakeAndConfigure() {
     if (!fPCIDevice) return false;
 
-    // Power D0
-    fPCIDevice->setPowerState(1);
+    // Power D0 via PM capability
+    UInt8 pmCap = 0;
+    fPCIDevice->findPCICapability(kIOPCIPowerManagementCapability, &pmCap);
+    if (pmCap) {
+        uint16_t pmcsr = fPCIDevice->configRead16(pmCap + 4);
+        if ((pmcsr & 3) != 0) {
+            fPCIDevice->configWrite16(pmCap + 4, pmcsr & ~0x8003U);
+            IOSleep(15);
+        }
+    }
 
-    // Disable PCIe ASPM L1 and L1ss to avoid crystal sleep freeze on LOQ 82XV
-    uint16_t lnkctl = fPCIDevice->configRead16(PCI_CFG_EXP_LNKCTL);
-    lnkctl &= ~0x0003; // Clear ASPM bits
-    fPCIDevice->configWrite16(PCI_CFG_EXP_LNKCTL, lnkctl);
+    // Disable PCIe ASPM L1 and L1ss to avoid crystal sleep freeze on Lenovo LOQ 82XV
+    UInt8 pcieCap = 0;
+    fPCIDevice->findPCICapability(kIOPCIPCIExpressCapability, &pcieCap);
+    if (pcieCap) {
+        uint16_t lnkctl = fPCIDevice->configRead16(pcieCap + PCI_EXP_LNKCTL_OFFSET);
+        lnkctl &= ~0x0003; // Clear ASPM L0s/L1 bits
+        fPCIDevice->configWrite16(pcieCap + PCI_EXP_LNKCTL_OFFSET, lnkctl);
+    }
 
-    // Enable Bus Mastering and Memory space
-    uint16_t cmd = fPCIDevice->configRead16(PCI_CFG_COMMAND);
-    cmd |= (PCI_COMMAND_BUS_MASTER | PCI_COMMAND_MEM_ENABLE);
-    fPCIDevice->configWrite16(PCI_CFG_COMMAND, cmd);
+    // Enable Bus Mastering, IO space, and Memory space
+    fPCIDevice->setBusMasterEnable(true);
+    fPCIDevice->setMemoryEnable(true);
+    fPCIDevice->setIOEnable(true);
+    IOSleep(2);
 
     return true;
 }
@@ -796,7 +816,7 @@ UInt32 RTL8852BE::outputPacket(mbuf_t m, void *param) {
     }
 
     size_t pkt_len = mbuf_pkthdr_len(m);
-    if (pkt_len > 1514) {
+    if (pkt_len < 14 || pkt_len > 1514) {
         freePacket(m);
         return kIOReturnOutputDropped;
     }
@@ -805,13 +825,10 @@ UInt32 RTL8852BE::outputPacket(mbuf_t m, void *param) {
     mbuf_copydata(m, 0, pkt_len, eth_buf);
     freePacket(m);
 
-    // 802.11 Header + LLC/SNAP + CCMP
-    uint8_t wlan_frame[1600];
-    size_t wlan_len = 0;
-
     // 802.11 QoS Data Header (26 bytes)
+    uint8_t wlan_frame[1600];
     wlan_frame[0] = 0x88; // QoS Data
-    wlan_frame[1] = 0x01; // To DS
+    wlan_frame[1] = fSecured ? 0x41 : 0x01; // To-DS | Protected (bit 6 set if secured)
     wlan_frame[2] = 0x00; wlan_frame[3] = 0x00; // Duration
     memcpy(&wlan_frame[4], fTargetBSSID, 6); // Addr1 (BSSID)
     memcpy(&wlan_frame[10], fCalib.mac_addr, 6); // Addr2 (SA)
@@ -819,42 +836,44 @@ UInt32 RTL8852BE::outputPacket(mbuf_t m, void *param) {
     wlan_frame[22] = 0x00; wlan_frame[23] = 0x00; // Seq Ctrl
     wlan_frame[24] = 0x00; wlan_frame[25] = 0x00; // QoS Ctrl
 
-    // LLC/SNAP Header (8 bytes)
-    wlan_frame[26] = 0xAA; wlan_frame[27] = 0xAA; wlan_frame[28] = 0x03;
-    wlan_frame[29] = 0x00; wlan_frame[30] = 0x00; wlan_frame[31] = 0x00;
-    wlan_frame[32] = eth_buf[12]; wlan_frame[33] = eth_buf[13]; // EtherType
-
-    // Payload
-    memcpy(&wlan_frame[34], eth_buf + 14, pkt_len - 14);
-    wlan_len = 34 + (pkt_len - 14);
-
-    // CCMP Encryption if secured
+    size_t wlan_len = 0;
     if (fSecured) {
-        uint8_t aad[30];
-        size_t aad_len = rtl_crypto::ccmp_build_aad(wlan_frame, 26, aad);
+        uint64_t pn = fTxPN++;
         uint8_t nonce[13];
-        rtl_crypto::ccmp_build_nonce(wlan_frame, 26, fTxPN++, nonce);
+        uint8_t aad[30];
+        rtl_crypto::ccmp_build_nonce(wlan_frame, 26, pn, nonce);
+        size_t aad_len = rtl_crypto::ccmp_build_aad(wlan_frame, 26, aad);
 
-        uint8_t cipher[1600];
+        // CCMP Header (8 bytes) at offset 26
+        wlan_frame[26] = (uint8_t)(pn & 0xFF);
+        wlan_frame[27] = (uint8_t)((pn >> 8) & 0xFF);
+        wlan_frame[28] = 0x00;
+        wlan_frame[29] = 0x20; // Key ID 0, ExtIV = 1
+        wlan_frame[30] = (uint8_t)((pn >> 16) & 0xFF);
+        wlan_frame[31] = (uint8_t)((pn >> 24) & 0xFF);
+        wlan_frame[32] = (uint8_t)((pn >> 32) & 0xFF);
+        wlan_frame[33] = (uint8_t)((pn >> 40) & 0xFF);
+
+        // Plaintext: LLC/SNAP (8 bytes) + Ethernet payload (pkt_len - 14)
+        uint8_t plain[1600];
+        plain[0] = 0xAA; plain[1] = 0xAA; plain[2] = 0x03;
+        plain[3] = 0x00; plain[4] = 0x00; plain[5] = 0x00;
+        plain[6] = eth_buf[12]; plain[7] = eth_buf[13];
+        memcpy(plain + 8, eth_buf + 14, pkt_len - 14);
+        size_t plain_len = 8 + (pkt_len - 14);
+
         uint8_t mic[8];
         rtl_crypto::ccmp_encrypt(fPTK + 32, nonce, aad, aad_len,
-                                &wlan_frame[26], wlan_len - 26, cipher, mic);
-
-        // Insert CCMP header (8 bytes)
-        uint8_t ccmp_hdr[8];
-        ccmp_hdr[0] = (uint8_t)(fTxPN & 0xFF);
-        ccmp_hdr[1] = (uint8_t)((fTxPN >> 8) & 0xFF);
-        ccmp_hdr[2] = 0x00;
-        ccmp_hdr[3] = 0x20; // Key ID 0, ExtIV = 1
-        ccmp_hdr[4] = (uint8_t)((fTxPN >> 16) & 0xFF);
-        ccmp_hdr[5] = (uint8_t)((fTxPN >> 24) & 0xFF);
-        ccmp_hdr[6] = (uint8_t)((fTxPN >> 32) & 0xFF);
-        ccmp_hdr[7] = (uint8_t)((fTxPN >> 40) & 0xFF);
-
-        memcpy(&wlan_frame[26], ccmp_hdr, 8);
-        memcpy(&wlan_frame[34], cipher, wlan_len - 26);
-        memcpy(&wlan_frame[34 + (wlan_len - 26)], mic, 8);
-        wlan_len += 16; // 8 bytes CCMP header + 8 bytes MIC
+                                plain, plain_len, wlan_frame + 34, mic);
+        memcpy(wlan_frame + 34 + plain_len, mic, 8);
+        wlan_len = 34 + plain_len + 8;
+    } else {
+        // Unsecured: LLC/SNAP (8 bytes) at offset 26 + Payload at offset 34
+        wlan_frame[26] = 0xAA; wlan_frame[27] = 0xAA; wlan_frame[28] = 0x03;
+        wlan_frame[29] = 0x00; wlan_frame[30] = 0x00; wlan_frame[31] = 0x00;
+        wlan_frame[32] = eth_buf[12]; wlan_frame[33] = eth_buf[13];
+        memcpy(&wlan_frame[34], eth_buf + 14, pkt_len - 14);
+        wlan_len = 34 + (pkt_len - 14);
     }
 
     if (!transmitRawFrame(wlan_frame, wlan_len, Q_BE, 0)) {
@@ -864,7 +883,7 @@ UInt32 RTL8852BE::outputPacket(mbuf_t m, void *param) {
 
     fTxBytes += pkt_len;
     fTxSubmitted++;
-    return kIOReturnSuccess;
+    return kIOReturnOutputSuccess;
 }
 
 bool RTL8852BE::transmitRawFrame(const uint8_t *frame, size_t len, uint8_t qsel, uint8_t rate) {
@@ -1021,25 +1040,98 @@ void RTL8852BE::processRxFrame(const uint8_t *frame, size_t len, int8_t rssi) {
         } else if (subtype == 12) { // Deauth
             handleDeauthFrame(frame, len);
         }
-    } else if (type == 2) { // Data
-        fRxData++;
-        // Check for EAPOL or Ethernet dispatch
-        if (len >= 32 && frame[30] == 0x88 && frame[31] == 0x8E) { // 802.1X EAPOL
-            handleEAPOLFrame(frame, len, 32);
-        } else if (fNetif && fWifiState == kRTLStateConnected && len >= 34) {
-            // LLC/SNAP Decapsulation -> Ethernet frame
-            size_t payload_len = len - 34;
-            mbuf_t m = nullptr;
-            if (allocatePacket(payload_len + 14, &m) == kIOReturnSuccess && m) {
-                uint8_t eth[14];
-                memcpy(&eth[0], &frame[4], 6); // DA
-                memcpy(&eth[6], &frame[10], 6); // SA
-                eth[12] = frame[32]; eth[13] = frame[33]; // EtherType
+        return;
+    }
 
-                mbuf_copyback(m, 0, 14, eth, MBUF_DONTWAIT);
-                mbuf_copyback(m, 14, payload_len, frame + 34, MBUF_DONTWAIT);
-                fNetif->inputPacket(m);
-                fRxBytes += (payload_len + 14);
+    if (type == 2) { // Data
+        fRxData++;
+
+        // Only process data frames if associating or connected
+        if (fWifiState != kRTLStateHandshake && fWifiState != kRTLStateConnected) return;
+
+        // In infrastructure mode From-DS: Addr1=DA, Addr2=BSSID, Addr3=SA
+        if (memcmp(frame + 10, fTargetBSSID, 6) != 0) return;
+        if (subtype & 0x04) return; // Null data frame
+
+        size_t hdrLen = (subtype & 0x08) ? 26 : 24; // QoS Data = 26 bytes, non-QoS = 24 bytes
+        if ((subtype & 0x08) && (fc1 & 0x80)) hdrLen += 4; // HT/HE control
+        if (len < hdrLen + 8) return;
+
+        bool isProtected = (fc1 & 0x40) != 0;
+
+        if (!isProtected) {
+            // Unprotected 802.1X EAPOL (Messages 1 and 3 in initial handshake)
+            const uint8_t *llc = frame + hdrLen;
+            if (llc[0] == 0xAA && llc[1] == 0xAA && llc[2] == 0x03 &&
+                llc[6] == 0x88 && llc[7] == 0x8E) {
+                handleEAPOLFrame(frame, len, hdrLen + 8);
+            }
+            return;
+        }
+
+        // Protected Data Frame
+        if (fWifiState != kRTLStateConnected || !fKeyInstalled) return;
+        if (len < hdrLen + 8 + 8) return; // Header + CCMP Header (8) + MIC (8)
+
+        const uint8_t *ccmp = frame + hdrLen;
+        if ((ccmp[3] & 0x20) == 0) return; // ExtIV bit must be 1 for CCMP
+
+        uint64_t pn = ((uint64_t)ccmp[0]) | (((uint64_t)ccmp[1]) << 8) |
+                      (((uint64_t)ccmp[4]) << 16) | (((uint64_t)ccmp[5]) << 24) |
+                      (((uint64_t)ccmp[6]) << 32) | (((uint64_t)ccmp[7]) << 40);
+
+        bool isMulticast = (frame[4] & 0x01) != 0;
+        uint8_t keyId = (ccmp[3] >> 6) & 0x03;
+
+        // Replay Protection
+        if (isMulticast) {
+            if (pn <= fRxGtkPN[keyId]) { fRxDropped++; return; }
+        } else {
+            if (pn <= fRxPtkPN) { fRxDropped++; return; }
+        }
+
+        uint8_t nonce[13];
+        uint8_t aad[30];
+        rtl_crypto::ccmp_build_nonce(frame, hdrLen, pn, nonce);
+        size_t aadLen = rtl_crypto::ccmp_build_aad(frame, hdrLen, aad);
+        if (aadLen == 0) return;
+
+        size_t cipherLen = len - hdrLen - 8 - 8;
+        const uint8_t *ciphertext = frame + hdrLen + 8;
+        const uint8_t *mic = ciphertext + cipherLen;
+        if (cipherLen > sizeof(fRxPlain)) return;
+
+        const uint8_t *tk = isMulticast ? fGTK : (fPTK + 32);
+        if (!rtl_crypto::ccmp_decrypt(tk, nonce, aad, aadLen, ciphertext, cipherLen, mic, fRxPlain)) {
+            fRxDropped++;
+            return;
+        }
+
+        // Update verified PN
+        if (isMulticast) fRxGtkPN[keyId] = pn;
+        else fRxPtkPN = pn;
+
+        // Validate decrypted LLC/SNAP
+        if (cipherLen < 8 || fRxPlain[0] != 0xAA || fRxPlain[1] != 0xAA || fRxPlain[2] != 0x03) return;
+        uint16_t ethertype = (uint16_t)((((uint16_t)fRxPlain[6]) << 8) | fRxPlain[7]);
+        if (ethertype == 0x888E) {
+            handleEAPOLFrame(fRxPlain, cipherLen, 8);
+            return;
+        }
+
+        // Deliver decrypted payload as Ethernet packet to macOS
+        if (fNetif) {
+            size_t ethLen = 14 + (cipherLen - 8);
+            mbuf_t m = allocatePacket((UInt32)ethLen);
+            if (m) {
+                uint8_t *dst = (uint8_t *)mbuf_data(m);
+                memcpy(dst, frame + 4, 6);       // DA (Destination Address)
+                memcpy(dst + 6, frame + 16, 6);  // SA (Source Address from 802.11 Addr3)
+                dst[12] = (uint8_t)(ethertype >> 8);
+                dst[13] = (uint8_t)(ethertype & 0xFF);
+                memcpy(dst + 14, fRxPlain + 8, cipherLen - 8);
+                fNetif->inputPacket(m, (UInt32)ethLen);
+                fRxBytes += ethLen;
             }
         }
     }
@@ -1080,9 +1172,14 @@ void RTL8852BE::handleEAPOLFrame(const uint8_t *frame, size_t len, size_t hdrLen
 
     uint16_t key_info = (eapol[5] << 8) | eapol[6];
     bool is_pairwise = (key_info & (1 << 3)) != 0;
-    bool is_mic = (key_info & (1 << 8)) != 0;
     bool is_install = (key_info & (1 << 6)) != 0;
     bool is_ack = (key_info & (1 << 7)) != 0;
+    bool is_mic = (key_info & (1 << 8)) != 0;
+
+    uint64_t replay = 0;
+    for (int i = 0; i < 8; i++) {
+        replay = (replay << 8) | eapol[9 + i];
+    }
 
     if (is_pairwise && is_ack && !is_mic) {
         // Message 1 of 4: Extract ANonce, generate SNonce, derive PTK, send Message 2
@@ -1097,12 +1194,63 @@ void RTL8852BE::handleEAPOLFrame(const uint8_t *frame, size_t len, size_t hdrLen
                            fCalib.mac_addr, fTargetBSSID,
                            fSNonce, fANonce, fPTK);
 
-        // Send Message 2 of 4
-        sendEAPOLFrame(0x010A, *(uint64_t *)&eapol[9], fSNonce, nullptr, nullptr, 0);
+        fLastReplayCounter = replay;
+
+        // Send Message 2 of 4 (Key Info: 0x010A = Pairwise, MIC, Descriptor Version 2)
+        sendEAPOLFrame(0x010A, &eapol[9], fSNonce, nullptr, nullptr, 0);
     } else if (is_pairwise && is_install && is_mic) {
-        // Message 3 of 4: Send Message 4, install PTK / GTK, Connected!
+        // Message 3 of 4: Verify MIC, unwrap GTK, send Message 4, install PTK/GTK
         IOLog("RTL8852BE: WPA2 4-Way Handshake Message 3 received.\n");
-        sendEAPOLFrame(0x030A, *(uint64_t *)&eapol[9], nullptr, nullptr, nullptr, 0);
+
+        if (replay <= fLastReplayCounter && fKeyInstalled) return;
+
+        uint8_t verify[512];
+        if (eapol_len > sizeof(verify)) return;
+        memcpy(verify, eapol, eapol_len);
+
+        uint8_t rxMic[16];
+        memcpy(rxMic, verify + 81, 16);
+        memset(verify + 81, 0, 16);
+
+        uint8_t digest[20];
+        rtl_crypto::hmac_sha1(fPTK, 16, verify, eapol_len, digest);
+        if (memcmp(rxMic, digest, 16) != 0) {
+            IOLog("RTL8852BE: EAPOL M3 MIC verification failed!\n");
+            return;
+        }
+        fLastReplayCounter = replay;
+
+        // Unwrap GTK from Key Data Encapsulation (KDE) if present
+        uint16_t kdLen = (uint16_t)((verify[97] << 8) | verify[98]);
+        if ((key_info & 0x1000) && kdLen >= 24 && 99 + (size_t)kdLen <= eapol_len) {
+            uint8_t unwrapped[256];
+            if (rtl_crypto::aes_key_unwrap(fPTK + 16, verify + 99, kdLen, unwrapped, sizeof(unwrapped))) {
+                size_t plainLen = kdLen - 8;
+                for (size_t off = 0; off + 2 <= plainLen; ) {
+                    uint8_t id = unwrapped[off], l = unwrapped[off + 1];
+                    if (id == 0xDD && l == 0) break; // padding
+                    if (off + 2 + l > plainLen) break;
+                    if (id == 0xDD && l >= 6 + 16 && unwrapped[off + 2] == 0x00 &&
+                        unwrapped[off + 3] == 0x0F && unwrapped[off + 4] == 0xAC &&
+                        unwrapped[off + 5] == 0x01) {
+                        memcpy(fGTK, unwrapped + off + 8, 16);
+                    }
+                    off += 2 + l;
+                }
+                memset(unwrapped, 0, sizeof(unwrapped));
+            }
+        }
+
+        if (!fKeyInstalled) {
+            fKeyInstalled = true;
+            fTxPN = 1;
+            fRxPtkPN = 0;
+            memset(fRxGtkPN, 0, sizeof(fRxGtkPN));
+            IOLog("RTL8852BE: Installing TK & GTK keys. Link is now secure.\n");
+        }
+
+        // Send Message 4 of 4 (Key Info: 0x030A = Pairwise, MIC, Secure, Version 2)
+        sendEAPOLFrame(0x030A, &eapol[9], nullptr, nullptr, nullptr, 0);
 
         fWifiState = kRTLStateConnected;
         fSecured = true;
@@ -1151,7 +1299,7 @@ void RTL8852BE::sendAssocFrame() {
     transmitRawFrame(assoc, pos, Q_MGNT, 0);
 }
 
-void RTL8852BE::sendEAPOLFrame(uint8_t key_info, uint64_t key_replay, const uint8_t *snonce,
+void RTL8852BE::sendEAPOLFrame(uint16_t key_info, const uint8_t *key_replay, const uint8_t *snonce,
                               const uint8_t *mic, const uint8_t *key_data, size_t key_data_len) {
     uint8_t frame[256];
     memset(frame, 0, sizeof(frame));
@@ -1171,59 +1319,129 @@ void RTL8852BE::sendEAPOLFrame(uint8_t key_info, uint64_t key_replay, const uint
     uint8_t *eapol = &frame[34];
     eapol[0] = 0x02; // Version 2
     eapol[1] = 0x03; // EAPOL-Key
-    eapol[2] = 0x00; eapol[3] = (uint8_t)(95 + key_data_len); // Length
+    uint16_t body_len = (uint16_t)(95 + key_data_len);
+    eapol[2] = (uint8_t)(body_len >> 8);
+    eapol[3] = (uint8_t)(body_len & 0xFF);
 
     eapol[4] = 0x02; // Descriptor Type: RSN
-    eapol[5] = (uint8_t)(key_info >> 8); eapol[6] = (uint8_t)(key_info & 0xFF);
+    eapol[5] = (uint8_t)(key_info >> 8);
+    eapol[6] = (uint8_t)(key_info & 0xFF);
     eapol[7] = 0x00; eapol[8] = 0x10; // Key Length 16
-    memcpy(&eapol[9], &key_replay, 8);
-    if (snonce) memcpy(&eapol[17], snonce, 32);
+    if (key_replay) {
+        memcpy(&eapol[9], key_replay, 8);
+    }
+    if (snonce) {
+        memcpy(&eapol[17], snonce, 32);
+    }
+    eapol[97] = (uint8_t)(key_data_len >> 8);
+    eapol[98] = (uint8_t)(key_data_len & 0xFF);
+    if (key_data && key_data_len > 0) {
+        memcpy(&eapol[99], key_data, key_data_len);
+    }
 
     // Compute HMAC-SHA1 MIC over EAPOL packet with KCK (first 16 bytes of PTK)
     uint8_t hmac[20];
-    rtl_crypto::hmac_sha1(fPTK, 16, eapol, 99 + key_data_len, hmac);
+    rtl_crypto::hmac_sha1(fPTK, 16, eapol, 4 + body_len, hmac);
     memcpy(&eapol[81], hmac, 16);
 
-    transmitRawFrame(frame, 34 + 99 + key_data_len, Q_VO, 0);
+    transmitRawFrame(frame, 34 + 4 + body_len, Q_VO, 0);
 }
 
 // User Client Dispatch Helpers
 IOReturn RTL8852BE::connectToNetwork(const char *ssid, const char *passphrase, const uint8_t *bssid) {
     if (!ssid || strlen(ssid) == 0) return kIOReturnBadArgument;
-    strncpy(fTargetSSID, ssid, RTL8852BE_MAX_SSID_LEN);
-    fTargetSSID[RTL8852BE_MAX_SSID_LEN] = '\0';
+    if (!fCommandGate || !fHwReady) return kIOReturnNotReady;
 
-    if (passphrase) {
-        strncpy(fTargetPassphrase, passphrase, RTL8852BE_MAX_PASSPHRASE_LEN);
-        fTargetPassphrase[RTL8852BE_MAX_PASSPHRASE_LEN] = '\0';
-        // Compute PMK via PBKDF2-HMAC-SHA1 (4096 iterations)
-        rtl_crypto::pbkdf2_sha1(fTargetPassphrase, strlen(fTargetPassphrase),
-                               (const uint8_t *)fTargetSSID, strlen(fTargetSSID),
-                               4096, fPMK, 32);
+    char safe_ssid[RTL8852BE_MAX_SSID_LEN + 1];
+    strncpy(safe_ssid, ssid, RTL8852BE_MAX_SSID_LEN);
+    safe_ssid[RTL8852BE_MAX_SSID_LEN] = '\0';
+
+    uint8_t pmk[32];
+    bool has_pmk = false;
+    if (passphrase && strlen(passphrase) >= 8) {
+        // PBKDF2 (4096 rounds) calculated outside workloop gate
+        rtl_crypto::pbkdf2_sha1(passphrase, strlen(passphrase),
+                               (const uint8_t *)safe_ssid, strlen(safe_ssid),
+                               4096, pmk, 32);
+        has_pmk = true;
     }
 
-    if (bssid) {
-        memcpy(fTargetBSSID, bssid, 6);
+    struct ConnectArgs {
+        const char *ssid;
+        const uint8_t *bssid;
+        const uint8_t *pmk;
+        bool has_pmk;
+    } args = { safe_ssid, bssid, has_pmk ? pmk : nullptr, has_pmk };
+
+    IOReturn ret = fCommandGate->runAction(&RTL8852BE::gatedConnect, &args);
+    memset(pmk, 0, sizeof(pmk));
+    return ret;
+}
+
+IOReturn RTL8852BE::gatedConnect(OSObject *owner, void *arg0, void *arg1, void *arg2, void *arg3) {
+    RTL8852BE *me = OSDynamicCast(RTL8852BE, owner);
+    if (!me || !me->fHwReady) return kIOReturnNotReady;
+
+    struct ConnectArgs {
+        const char *ssid;
+        const uint8_t *bssid;
+        const uint8_t *pmk;
+        bool has_pmk;
+    } *args = (struct ConnectArgs *)arg0;
+    if (!args) return kIOReturnBadArgument;
+
+    strncpy(me->fTargetSSID, args->ssid, RTL8852BE_MAX_SSID_LEN);
+    me->fTargetSSID[RTL8852BE_MAX_SSID_LEN] = '\0';
+
+    if (args->has_pmk && args->pmk) {
+        memcpy(me->fPMK, args->pmk, 32);
+    }
+
+    if (args->bssid) {
+        memcpy(me->fTargetBSSID, args->bssid, 6);
     } else {
         // Find in scan cache
-        for (uint32_t i = 0; i < fScanResults.count; i++) {
-            if (strcmp(fScanResults.aps[i].ssid, fTargetSSID) == 0) {
-                memcpy(fTargetBSSID, fScanResults.aps[i].bssid, 6);
-                fTargetChannel = fScanResults.aps[i].channel;
+        for (uint32_t i = 0; i < me->fScanResults.count; i++) {
+            if (strcmp(me->fScanResults.aps[i].ssid, me->fTargetSSID) == 0) {
+                memcpy(me->fTargetBSSID, me->fScanResults.aps[i].bssid, 6);
+                me->fTargetChannel = me->fScanResults.aps[i].channel;
                 break;
             }
         }
     }
 
-    setChannel(fTargetChannel);
-    fWifiState = kRTLStateAuthenticating;
-    sendAuthFrame();
+    me->setChannel(me->fTargetChannel);
+    me->fWifiState = kRTLStateAuthenticating;
+    me->fKeyInstalled = false;
+    me->fLastReplayCounter = 0;
+    me->sendAuthFrame();
     return kIOReturnSuccess;
 }
 
 IOReturn RTL8852BE::disconnectNetwork() {
-    fWifiState = kRTLStateDisconnected;
-    fSecured = false;
+    if (!fCommandGate) return kIOReturnNotAttached;
+    return fCommandGate->runAction(&RTL8852BE::gatedDisconnect);
+}
+
+IOReturn RTL8852BE::gatedDisconnect(OSObject *owner, void *arg0, void *arg1, void *arg2, void *arg3) {
+    RTL8852BE *me = OSDynamicCast(RTL8852BE, owner);
+    if (!me) return kIOReturnBadArgument;
+    me->fWifiState = kRTLStateDisconnected;
+    me->fSecured = false;
+    me->fKeyInstalled = false;
+    return kIOReturnSuccess;
+}
+
+IOReturn RTL8852BE::setAntennaMode(uint8_t ant) {
+    if (!fCommandGate) return kIOReturnNotAttached;
+    return fCommandGate->runAction(&RTL8852BE::gatedSetAntenna, (void *)(uintptr_t)ant);
+}
+
+IOReturn RTL8852BE::gatedSetAntenna(OSObject *owner, void *arg0, void *arg1, void *arg2, void *arg3) {
+    RTL8852BE *me = OSDynamicCast(RTL8852BE, owner);
+    if (!me) return kIOReturnBadArgument;
+    uint8_t ant = (uint8_t)(uintptr_t)arg0;
+    me->fAntennaMode = ant;
     return kIOReturnSuccess;
 }
 
@@ -1300,10 +1518,20 @@ IOReturn RTL8852BE::diagReadReg(uint32_t addr, uint32_t width, uint32_t *outValu
 
 IOReturn RTL8852BE::diagWriteReg(uint32_t addr, uint32_t width, uint32_t value) {
     if (addr >= RTL8852BE_BAR2_SIZE) return kIOReturnBadArgument;
+    if (!fCommandGate) return kIOReturnNotAttached;
+    return fCommandGate->runAction(&RTL8852BE::gatedDiagWriteReg, (void *)(uintptr_t)addr, (void *)(uintptr_t)width, (void *)(uintptr_t)value);
+}
+
+IOReturn RTL8852BE::gatedDiagWriteReg(OSObject *owner, void *arg0, void *arg1, void *arg2, void *arg3) {
+    RTL8852BE *me = OSDynamicCast(RTL8852BE, owner);
+    if (!me) return kIOReturnBadArgument;
+    uint32_t addr = (uint32_t)(uintptr_t)arg0;
+    uint32_t width = (uint32_t)(uintptr_t)arg1;
+    uint32_t value = (uint32_t)(uintptr_t)arg2;
     switch (width) {
-        case 1: mmio_write8(addr, (uint8_t)value); break;
-        case 2: mmio_write16(addr, (uint16_t)value); break;
-        case 4: mmio_write32(addr, value); break;
+        case 1: me->mmio_write8(addr, (uint8_t)value); break;
+        case 2: me->mmio_write16(addr, (uint16_t)value); break;
+        case 4: me->mmio_write32(addr, value); break;
         default: return kIOReturnBadArgument;
     }
     return kIOReturnSuccess;
@@ -1317,17 +1545,34 @@ IOReturn RTL8852BE::diagReadRF(uint8_t path, uint32_t addr, uint32_t *outValue) 
 
 IOReturn RTL8852BE::diagWriteRF(uint8_t path, uint32_t addr, uint32_t value) {
     if (path > 1) return kIOReturnBadArgument;
-    rf_write(path, addr, 0xFFFFF, value);
+    if (!fCommandGate) return kIOReturnNotAttached;
+    return fCommandGate->runAction(&RTL8852BE::gatedDiagWriteRF, (void *)(uintptr_t)path, (void *)(uintptr_t)addr, (void *)(uintptr_t)value);
+}
+
+IOReturn RTL8852BE::gatedDiagWriteRF(OSObject *owner, void *arg0, void *arg1, void *arg2, void *arg3) {
+    RTL8852BE *me = OSDynamicCast(RTL8852BE, owner);
+    if (!me) return kIOReturnBadArgument;
+    uint8_t path = (uint8_t)(uintptr_t)arg0;
+    uint32_t addr = (uint32_t)(uintptr_t)arg1;
+    uint32_t value = (uint32_t)(uintptr_t)arg2;
+    me->rf_write(path, addr, 0xFFFFF, value);
     return kIOReturnSuccess;
 }
 
 IOReturn RTL8852BE::triggerIQK(uint32_t *outResult) {
     if (!outResult) return kIOReturnBadArgument;
-    // Realtek IQ Calibration
-    rf_write(0, RR_LCKST, RR_LCKST_BIN, 0);
-    rf_write(0, RR_LCKST, RR_LCKST_BIN, 1);
-    rf_write(1, RR_LCKST, RR_LCKST_BIN, 0);
-    rf_write(1, RR_LCKST, RR_LCKST_BIN, 1);
-    *outResult = 0x03; // Both Path A and Path B calibrated
+    if (!fCommandGate) return kIOReturnNotAttached;
+    return fCommandGate->runAction(&RTL8852BE::gatedTriggerIQK, (void *)outResult);
+}
+
+IOReturn RTL8852BE::gatedTriggerIQK(OSObject *owner, void *arg0, void *arg1, void *arg2, void *arg3) {
+    RTL8852BE *me = OSDynamicCast(RTL8852BE, owner);
+    if (!me) return kIOReturnBadArgument;
+    uint32_t *outResult = (uint32_t *)arg0;
+    me->rf_write(0, RR_LCKST, RR_LCKST_BIN, 0);
+    me->rf_write(0, RR_LCKST, RR_LCKST_BIN, 1);
+    me->rf_write(1, RR_LCKST, RR_LCKST_BIN, 0);
+    me->rf_write(1, RR_LCKST, RR_LCKST_BIN, 1);
+    if (outResult) *outResult = 0x03; // Both Path A and Path B calibrated
     return kIOReturnSuccess;
 }

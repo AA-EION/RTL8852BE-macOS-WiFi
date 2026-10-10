@@ -72,6 +72,7 @@ public:
     virtual bool configureInterface(IONetworkInterface *netif) override;
 
     // UserClient Control APIs (serialized through fCommandGate)
+    IOCommandGate *getCommandGate() const { return fCommandGate; }
     IOReturn triggerScan();
     IOReturn getScanResults(RTL8852BEScanResults *outResults);
     IOReturn connectToNetwork(const char *ssid, const char *passphrase, const uint8_t *bssid);
@@ -111,6 +112,10 @@ private:
     static IOReturn gatedScan(OSObject *owner, void *arg0, void *arg1, void *arg2, void *arg3);
     static IOReturn gatedConnect(OSObject *owner, void *arg0, void *arg1, void *arg2, void *arg3);
     static IOReturn gatedDisconnect(OSObject *owner, void *arg0, void *arg1, void *arg2, void *arg3);
+    static IOReturn gatedSetAntenna(OSObject *owner, void *arg0, void *arg1, void *arg2, void *arg3);
+    static IOReturn gatedDiagWriteReg(OSObject *owner, void *arg0, void *arg1, void *arg2, void *arg3);
+    static IOReturn gatedDiagWriteRF(OSObject *owner, void *arg0, void *arg1, void *arg2, void *arg3);
+    static IOReturn gatedTriggerIQK(OSObject *owner, void *arg0, void *arg1, void *arg2, void *arg3);
 
     // Hardware initialization
     bool hwInit();
@@ -145,7 +150,7 @@ private:
     void handleEAPOLFrame(const uint8_t *frame, size_t len, size_t hdrLen);
     void sendAuthFrame();
     void sendAssocFrame();
-    void sendEAPOLFrame(uint8_t key_info, uint64_t key_replay, const uint8_t *snonce, const uint8_t *mic, const uint8_t *key_data, size_t key_data_len);
+    void sendEAPOLFrame(uint16_t key_info, const uint8_t *key_replay, const uint8_t *snonce, const uint8_t *mic, const uint8_t *key_data, size_t key_data_len);
     void handleDeauthFrame(const uint8_t *frame, size_t len);
 
     // IOKit Objects
@@ -202,7 +207,12 @@ private:
     uint8_t                        fGTK[32];
     uint64_t                       fTxPN;
     uint64_t                       fRxPN;
+    uint64_t                       fRxPtkPN;
+    uint64_t                       fRxGtkPN[4];
+    uint64_t                       fLastReplayCounter;
+    bool                           fKeyInstalled;
     bool                           fSecured;
+    uint8_t                        fRxPlain[1600];
 
     // Accounting & Diagnostics
     uint64_t                       fRxBytes;

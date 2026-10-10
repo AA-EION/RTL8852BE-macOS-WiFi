@@ -35,9 +35,11 @@ cp "${PROJECT_DIR}/gui/Info.plist" "${APP_BUNDLE}/Contents/Info.plist"
 cp -R "${PROJECT_DIR}/build/RTL8852BEWiFi.kext" "${APP_BUNDLE}/Contents/Resources/RTL8852BEWiFi.kext"
 cp "${PROJECT_DIR}/tools/rtl8852be_cli" "${APP_BUNDLE}/Contents/Resources/rtl8852be_cli"
 cp "${PROJECT_DIR}/scripts/load_test_kext.sh" "${APP_BUNDLE}/Contents/Resources/load_test_kext.sh"
-cp "${PROJECT_DIR}/docs/TESTING.md" "${APP_BUNDLE}/Contents/Resources/Testing Guide.txt"
+[ -f "${PROJECT_DIR}/docs/TESTING.md" ] && cp "${PROJECT_DIR}/docs/TESTING.md" "${APP_BUNDLE}/Contents/Resources/Testing Guide.txt" || true
 mkdir -p "${APP_BUNDLE}/Contents/Resources/Licenses"
-cp "${PROJECT_DIR}/LICENSE" "${PROJECT_DIR}/NOTICE.md" "${PROJECT_DIR}/LICENSES/"*.txt "${APP_BUNDLE}/Contents/Resources/Licenses/"
+cp "${PROJECT_DIR}/LICENSE" "${APP_BUNDLE}/Contents/Resources/Licenses/"
+[ -f "${PROJECT_DIR}/NOTICE.md" ] && cp "${PROJECT_DIR}/NOTICE.md" "${APP_BUNDLE}/Contents/Resources/Licenses/" || true
+cp "${PROJECT_DIR}/LICENSES/"*.txt "${APP_BUNDLE}/Contents/Resources/Licenses/" 2>/dev/null || true
 
 # 6. Ad-hoc sign the .app bundle
 codesign --force --deep --sign - "${APP_BUNDLE}"
@@ -67,8 +69,13 @@ pkgbuild --root "${PKG_ROOT}" --component-plist "${PKG_WORK}/component.plist" \
     --identifier com.rtl8852be.macos.wifi.pkg --version "${VERSION}" --install-location / \
     "${PKG_WORK}/RTL8852BE-component.pkg"
 cp "${PROJECT_DIR}/installer/resources/"*.txt "${PKG_WORK}/resources/"
-{ cat "${PROJECT_DIR}/LICENSE"; printf '\n\n'; cat "${PROJECT_DIR}/NOTICE.md"; printf '\n\n'; \
-  cat "${PROJECT_DIR}/LICENSES/LicenseRef-rtlwifi-firmware.txt"; } > "${PKG_WORK}/resources/License.txt"
+{
+  cat "${PROJECT_DIR}/LICENSE"
+  if [ -f "${PROJECT_DIR}/NOTICE.md" ]; then printf '\n\n'; cat "${PROJECT_DIR}/NOTICE.md"; fi
+  for f in "${PROJECT_DIR}/LICENSES/"*.txt; do
+    if [ -f "$f" ]; then printf '\n\n'; cat "$f"; fi
+  done
+} > "${PKG_WORK}/resources/License.txt"
 sed "s/__VERSION__/${VERSION}/" "${PROJECT_DIR}/installer/Distribution.xml" > "${PKG_WORK}/Distribution.xml"
 PKG_OUT="${PKG_WORK}/RTL8852BE WiFi ${VERSION}.pkg"
 productbuild --distribution "${PKG_WORK}/Distribution.xml" --resources "${PKG_WORK}/resources" \
@@ -83,7 +90,9 @@ cp "${PKG_OUT}" "${DMG_ROOT}/Install RTL8852BE WiFi.pkg"
 cp "${PROJECT_DIR}/scripts/uninstall.sh" "${DMG_ROOT}/uninstall.sh"
 cp "${PROJECT_DIR}/installer/resources/welcome.txt" "${DMG_ROOT}/Read Me.txt"
 mkdir -p "${DMG_ROOT}/Licenses"
-cp "${PROJECT_DIR}/LICENSE" "${PROJECT_DIR}/NOTICE.md" "${PROJECT_DIR}/LICENSES/"*.txt "${DMG_ROOT}/Licenses/"
+cp "${PROJECT_DIR}/LICENSE" "${DMG_ROOT}/Licenses/"
+[ -f "${PROJECT_DIR}/NOTICE.md" ] && cp "${PROJECT_DIR}/NOTICE.md" "${DMG_ROOT}/Licenses/" || true
+cp "${PROJECT_DIR}/LICENSES/"*.txt "${DMG_ROOT}/Licenses/" 2>/dev/null || true
 
 mkdir -p "${PROJECT_DIR}/dist"
 rm -f "${DMG_OUT}"
