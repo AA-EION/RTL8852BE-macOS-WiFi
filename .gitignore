@@ -1,0 +1,15 @@
+# Build artifacts
+*.obj
+*.o
+*.exe
+*.d
+build/
+dist/
+.DS_Store
+__pycache__/
+*.swp
+*.bak
+tests/empirical_challenge_m1_*
+tests/test_runner
+tests/test_hardware_contract
+tests/test_crypto_bounds

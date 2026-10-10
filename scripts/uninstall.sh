@@ -1,0 +1,12 @@
+#!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Issen Software Group
+# Removes the RTL8852BE driver and app. Run: sudo ./uninstall.sh
+set -u
+if [[ "${EUID}" -ne 0 ]]; then echo "Run with sudo." >&2; exit 2; fi
+/usr/bin/killall RTL8852BEWirelessUtility rtl8852be_cli 2>/dev/null || true
+/usr/bin/kmutil unload -b com.rtl8852be.macos.wifi 2>/dev/null || true
+/bin/rm -rf /Library/Extensions/RTL8852BEWiFi.kext "/Applications/RTL8852BE Wireless Utility.app" /usr/local/bin/rtl8852be_cli
+/usr/sbin/pkgutil --forget com.rtl8852be.macos.wifi.pkg 2>/dev/null || true
+/usr/bin/kmutil clear-staging 2>/dev/null || true
+echo "Removed. Restart to rebuild the kernel extension cache without the driver."

@@ -1,0 +1,49 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Issen Software Group
+
+#ifndef RTL8852BE_USER_CLIENT_HPP
+#define RTL8852BE_USER_CLIENT_HPP
+
+#include <IOKit/IOUserClient.h>
+#include "RTL8852BE_ipc.h"
+
+class RTL8852BE;
+
+class RTL8852BEUserClient : public IOUserClient {
+    OSDeclareDefaultStructors(RTL8852BEUserClient);
+
+public:
+    virtual bool initWithTask(task_t owningTask, void *securityToken, UInt32 type) override;
+    virtual bool start(IOService *provider) override;
+    virtual void stop(IOService *provider) override;
+    virtual IOReturn clientClose() override;
+
+    virtual IOReturn externalMethod(uint32_t selector,
+                                    IOExternalMethodArguments *arguments,
+                                    IOExternalMethodDispatch *dispatch,
+                                    OSObject *target,
+                                    void *reference) override;
+
+    static const IOExternalMethodDispatch sMethods[kNumberOfMethods];
+
+    // Method actions
+    static IOReturn sScan(OSObject *target, void *reference, IOExternalMethodArguments *args);
+    static IOReturn sGetScanResults(OSObject *target, void *reference, IOExternalMethodArguments *args);
+    static IOReturn sConnect(OSObject *target, void *reference, IOExternalMethodArguments *args);
+    static IOReturn sDisconnect(OSObject *target, void *reference, IOExternalMethodArguments *args);
+    static IOReturn sGetStatus(OSObject *target, void *reference, IOExternalMethodArguments *args);
+    static IOReturn sSetAntenna(OSObject *target, void *reference, IOExternalMethodArguments *args);
+    static IOReturn sReadReg(OSObject *target, void *reference, IOExternalMethodArguments *args);
+    static IOReturn sWriteReg(OSObject *target, void *reference, IOExternalMethodArguments *args);
+    static IOReturn sReadRF(OSObject *target, void *reference, IOExternalMethodArguments *args);
+    static IOReturn sWriteRF(OSObject *target, void *reference, IOExternalMethodArguments *args);
+    static IOReturn sGetDiag(OSObject *target, void *reference, IOExternalMethodArguments *args);
+    static IOReturn sIQCalibrate(OSObject *target, void *reference, IOExternalMethodArguments *args);
+
+private:
+    RTL8852BE *fOwner;
+    task_t     fTask;
+    bool       fIsAdmin;
+};
+
+#endif // RTL8852BE_USER_CLIENT_HPP
