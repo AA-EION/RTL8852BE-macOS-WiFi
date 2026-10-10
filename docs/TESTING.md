@@ -89,7 +89,7 @@ To unload the driver safely:
 
 ```sh
 ./tools/rtl8852be_cli disconnect
-sudo kmutil unload -b com.realtek.driver.RTL8852BEWiFi
+sudo kmutil unload -b com.rtl8852be.macos.wifi
 ```
 
 To remove the experimental boot-arg:
