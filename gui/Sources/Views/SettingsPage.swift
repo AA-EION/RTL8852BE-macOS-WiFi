@@ -40,7 +40,7 @@ struct SettingsPage: View {
                 Label("RTL8852BEWiFi.kext", systemImage: "checkmark.shield")
             }
             if let d = model.diag {
-                LabeledContent("Firmware", value: d.fw_version == 0 ? "Unknown" : "\((d.fw_version >> 24) & 0xFF).\((d.fw_version >> 16) & 0xFF).\((d.fw_version >> 8) & 0xFF).\(d.fw_version & 0xFF)")
+                LabeledContent("Firmware", value: AppModel.firmwareVersion(d.fw_version))
                 LabeledContent("Hardware MAC", value: model.macAddress)
                 LabeledContent("Received frames", value: Format.count(UInt64(d.rx_desc_done)))
             }

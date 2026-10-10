@@ -363,6 +363,13 @@ final class AppModel {
 
     // MARK: - Helpers
 
+    nonisolated static func firmwareVersion(_ value: UInt32) -> String {
+        guard value != 0 else { return "Unknown" }
+        let parts: [UInt32] = [value >> 24, (value >> 16) & 0xff,
+                               (value >> 8) & 0xff, value & 0xff]
+        return parts.map { String($0) }.joined(separator: ".")
+    }
+
     nonisolated static func mac(_ m: (UInt8, UInt8, UInt8, UInt8, UInt8, UInt8)) -> String {
         String(format: "%02x:%02x:%02x:%02x:%02x:%02x", m.0, m.1, m.2, m.3, m.4, m.5)
     }

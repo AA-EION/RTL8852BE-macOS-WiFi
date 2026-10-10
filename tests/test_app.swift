@@ -56,6 +56,8 @@ final class TestDriver: WirelessDriverClient, @unchecked Sendable {
 struct AppRegressions {
     @MainActor
     static func main() async throws {
+        precondition(AppModel.firmwareVersion(0) == "Unknown")
+        precondition(AppModel.firmwareVersion(0x001b2001) == "0.27.32.1")
         let driver = TestDriver()
         let model = AppModel(client: driver, startMonitoring: false)
         model.refresh()
