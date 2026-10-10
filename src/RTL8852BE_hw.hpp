@@ -26,8 +26,10 @@
 #define PCI_COMMAND_BUS_MASTER           (1 << 2)
 #define PCI_COMMAND_MEM_ENABLE           (1 << 1)
 
-// MMIO BAR2 Window Sizes
-#define RTL8852BE_BAR2_SIZE              0x10000 // 64KB MMIO window
+// Minimum mapped span covering MAC and the AX PHY register aperture.
+// Linux phy.c: rtw89_phy_gen_ax.cr_base; accesses use the actual BAR length.
+#define RTL8852BE_PHY_CR_BASE            0x10000
+#define RTL8852BE_BAR2_SIZE              0x20000
 
 // Keep start() inert until the rtw89 bring-up blockers in docs/AUDIT.md are fixed.
 // A boot argument alone must not enable the incomplete firmware/DMA paths.

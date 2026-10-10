@@ -407,60 +407,11 @@ void RTL8852BE::mmio_write32_mask(uint32_t offset, uint32_t mask, uint32_t val) 
 
 // SWSI RF Access (Path A / Path B)
 uint32_t RTL8852BE::rf_read(uint8_t path, uint32_t addr, uint32_t mask) {
-    // Linux v6.12 phy.c: rtw89_phy_read_rf_v1 / rtw89_phy_read_rf_a.
-    mask &= 0xfffff;
-    if (path > 1 || !mask || (addr & ~0x100ffU)) return 0xffffffff;
-    const uint32_t shift = __builtin_ctz(mask);
-    if (addr & 0x10000) {
-        const uint32_t base = path == 0 ? 0xe000 : 0xf000;
-        return (mmio_read32(base + ((addr & 0xff) << 2)) & mask) >> shift;
-    }
-    bool idle = false;
-    for (int retry = 0; retry < 30; ++retry) {
-        if (!(mmio_read32(R_SWSI_V1) & (B_SWSI_W_BUSY_V1 | B_SWSI_R_BUSY_V1))) {
-            idle = true;
-            break;
-        }
-        IODelay(1);
-    }
-    if (!idle) return 0xffffffff;
-    const uint32_t request = (uint32_t(path) << B_SWSI_READ_ADDR_PATH_V1_SHIFT) | (addr & 0xff);
-    mmio_write32_mask(R_SWSI_READ_ADDR_V1, 0x7ff, request);
-    IODelay(2);
-    for (int retry = 0; retry < 30; ++retry) {
-        const uint32_t status = mmio_read32(R_SWSI_V1);
-        if (status & B_SWSI_R_DATA_DONE_V1) return (status & mask) >> shift;
-        IODelay(1);
-    }
-    return 0xffffffff;
+    return rtl8852bReadRF(registerIO(), path, addr, mask);
 }
 
 bool RTL8852BE::rf_write(uint8_t path, uint32_t addr, uint32_t mask, uint32_t val) {
-    // Linux v6.12 phy.c: rtw89_phy_write_rf_v1 / rtw89_phy_write_rf_a.
-    mask &= 0xfffff;
-    if (path > 1 || !mask || (addr & ~0x100ffU)) return false;
-    val = (val << __builtin_ctz(mask)) & mask;
-    if (addr & 0x10000) {
-        const uint32_t base = path == 0 ? 0xe000 : 0xf000;
-        mmio_write32_mask(base + ((addr & 0xff) << 2), mask, val);
-        IODelay(1);
-        return true;
-    }
-    bool idle = false;
-    for (int retry = 0; retry < 30; ++retry) {
-        if (!(mmio_read32(R_SWSI_V1) & (B_SWSI_W_BUSY_V1 | B_SWSI_R_BUSY_V1))) {
-            idle = true;
-            break;
-        }
-        IODelay(1);
-    }
-    if (!idle) return false;
-    if (mask != 0xfffff) mmio_write32_mask(R_SWSI_BIT_MASK_V1, 0xfffff, mask);
-    const uint32_t request = ((mask != 0xfffff) ? B_SWSI_DATA_BIT_MASK_EN_V1 : 0) |
-                             (uint32_t(path) << B_SWSI_DATA_PATH_V1_SHIFT) |
-                             ((addr & 0xff) << B_SWSI_DATA_ADDR_V1_SHIFT) | val;
-    mmio_write32(R_SWSI_DATA_V1, request);
-    return true;
+    return rtl8852bWriteRF(registerIO(), path, addr, mask, val);
 }
 
 // Prototype PCI wake and Link Control ASPM configuration.
@@ -581,9 +532,7 @@ bool RTL8852BE::downloadFirmware() {
 bool RTL8852BE::initBBAndRF() {
     auto bb = [](void *context, uint32_t address, uint32_t value) -> bool {
         auto *me = static_cast<RTL8852BE *>(context);
-        if (!rtlMmioRangeValid(address, 4, RTL8852BE_BAR2_SIZE)) return false;
-        me->mmio_write32(address, value);
-        return true;
+        return rtl8852bWriteBB(me->registerIO(), address, value);
     };
     struct RfContext { RTL8852BE *driver; uint8_t path; } paths[] = {{this, 0}, {this, 1}};
     auto rf = [](void *context, uint32_t address, uint32_t value) -> bool {

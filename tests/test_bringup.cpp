@@ -49,6 +49,66 @@ struct EfuseBus {
 };
 
 int main() {
+    struct PhyBus {
+        std::map<uint32_t, uint32_t> registers;
+        uint32_t writes = 0, delayed = 0;
+        bool failRead = false, failWrite = false;
+        RtlRegisterIO io() {
+            return {this,
+                [](void *ctx, uint32_t address, uint32_t width, uint32_t *value) {
+                    auto &bus = *static_cast<PhyBus *>(ctx);
+                    // A missing base translation cannot pass this bus model.
+                    assert(address >= 0x10000 && address < 0x20000 && width == 4);
+                    if (bus.failRead) return false;
+                    *value = bus.registers[address];
+                    return true;
+                },
+                [](void *ctx, uint32_t address, uint32_t width, uint32_t value) {
+                    auto &bus = *static_cast<PhyBus *>(ctx);
+                    assert(address >= 0x10000 && address < 0x20000 && width == 4);
+                    if (bus.failWrite) return false;
+                    bus.registers[address] = value;
+                    ++bus.writes;
+                    return true;
+                }, [](void *ctx, uint32_t us) { static_cast<PhyBus *>(ctx)->delayed += us; }};
+        }
+    } phy;
+    assert(rtl8852bWriteBB(phy.io(), 0x4000, 0x12345678));
+    assert(phy.registers[0x14000] == 0x12345678);
+    assert(rtl8852bWriteBB(phy.io(), 0xfe, 0));
+    assert(phy.delayed == 50000 && phy.writes == 1);
+    assert(rtl8852bWriteBB(phy.io(), 0x4004, 0xbabecafe) && phy.writes == 1);
+    assert(!rtl8852bWriteBB(phy.io(), 0x10000, 0));
+    phy.registers[0x1f060] = 0xf03a0;
+    assert(rtl8852bReadRF(phy.io(), 1, 0x10018, 0xff00) == 3);
+    assert(rtl8852bWriteRF(phy.io(), 1, 0x10018, 0xff00, 0x12));
+    assert(phy.registers[0x1f060] == 0xf12a0);
+    phy.registers[0x1174c] = B_SWSI_R_DATA_DONE_V1 | 0x54321;
+    assert(rtl8852bReadRF(phy.io(), 1, 0x18, 0xfffff) == 0x54321);
+    assert((phy.registers[0x10378] & 0x7ff) == 0x118);
+    assert(rtl8852bWriteRF(phy.io(), 1, 0x18, 0xff00, 0x5a));
+    assert((phy.registers[0x10374] & 0xfffff) == 0xff00);
+    assert(phy.registers[0x10370] == (B_SWSI_DATA_BIT_MASK_EN_V1 |
+           (1U << B_SWSI_DATA_PATH_V1_SHIFT) | (0x18U << B_SWSI_DATA_ADDR_V1_SHIFT) | 0x5a00));
+    phy.registers[0x1174c] = B_SWSI_R_BUSY_V1;
+    const uint32_t before = phy.writes;
+    assert(!rtl8852bWriteRF(phy.io(), 0, 0x18, 0xfffff, 0));
+    assert(rtl8852bReadRF(phy.io(), 0, 0x18, 0xfffff) == UINT32_MAX);
+    assert(phy.writes == before);
+    phy.registers[0x1174c] = 0; // Idle but read completion never arrives.
+    assert(rtl8852bReadRF(phy.io(), 0, 0x18, 0xfffff) == UINT32_MAX);
+    phy.registers[0x1174c] = UINT32_MAX;
+    assert(!rtl8852bWriteRF(phy.io(), 0, 0x18, 0xfffff, 0));
+    phy.failRead = true;
+    assert(rtl8852bReadRF(phy.io(), 0, 0x10018, 0xfffff) == UINT32_MAX);
+    assert(!rtl8852bWriteRF(phy.io(), 0, 0x10018, 0xfffff, 0));
+    phy.failRead = false; phy.failWrite = true;
+    assert(!rtl8852bWriteRF(phy.io(), 0, 0x10018, 0xfffff, 0));
+    assert(!rtl8852bWriteBB(phy.io(), 0x4000, 0));
+    assert(!rtl8852bWriteRF(phy.io(), 2, 0x18, 0xfffff, 0));
+    assert(!rtl8852bWriteRF(phy.io(), 0, 0x80000000, 0xfffff, 0));
+    assert(!rtl8852bWriteRF(phy.io(), 0, 0x18, 0, 0));
+
     struct PowerBus {
         std::map<uint32_t, uint32_t> regs;
         unsigned resets = 0, crystalWrites = 0, delays = 0;
@@ -162,5 +222,5 @@ int main() {
     assert(selected > 100 && selected < RTL8852BE_PHY_RADIOA_REGS_COUNT / 2);
     assert(rtl8852bApplyPhyTable(RTL8852BE_PHY_RADIOB_REGS, RTL8852BE_PHY_RADIOB_REGS_COUNT,
                                1, 1, realWrite, &selected));
-    printf("Physical eFuse cleanup/timeout, logical calibration, and conditional RF table tests passed (%zu selected writes).\n", selected);
+    printf("BB/RF translation, power/XTAL, physical eFuse cleanup/timeout, logical calibration and conditional RF table tests passed (%zu selected writes).\n", selected);
 }

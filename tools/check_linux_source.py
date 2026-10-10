@@ -68,7 +68,11 @@ def main():
         data = (args.linux_source / record["path"]).read_bytes()
         if hashlib.sha256(data).hexdigest() != record["sha256"]:
             raise ValueError(f"Source hash mismatch: {record['path']} (expected {manifest['ref']})")
-    upstream = {}
+    phy_source = (args.linux_source / RTW89 / "phy.c").read_text()
+    phy_base = re.search(r"rtw89_phy_gen_ax\s*=\s*\{\s*\.cr_base\s*=\s*(0x[0-9a-fA-F]+)", phy_source)
+    if not phy_base:
+        raise ValueError("Missing AX PHY cr_base")
+    upstream = {"RTL8852BE_PHY_CR_BASE": phy_base[1]}
     for name in ("reg.h", "pci.h", "mac.h", "core.h"):
         source = (args.linux_source / RTW89 / name).read_text()
         upstream.update(definitions(source))

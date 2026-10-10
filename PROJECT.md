@@ -11,7 +11,7 @@ The authoritative comparison is [docs/AUDIT.md](docs/AUDIT.md), based directly o
 | eFuse | Physical/logical OTP transport and MAC/crystal/RFE decoder implemented; full calibration application missing |
 | PHY/RF tables | Exact Linux v6.12 pairs and conditional interpreter; gain/H2C/calibration integration missing |
 | WPA2/CCMP | Portable crypto tests pass; network protocol and key lifecycle incomplete |
-| IPC, CLI, GUI | RTL87 app layout/workflows, RTL88 ABI client and model regressions; native checks in CI |
+| IPC, CLI, GUI | RTL87 app layout/workflows, RTL88 ABI client and native model regressions; macOS build/packaging checks pass in CI |
 | Packaging | Development artifacts only; loading blocked |
 | Tests | Portable production regressions plus 57 legacy simulator cases; no hardware evidence |
 

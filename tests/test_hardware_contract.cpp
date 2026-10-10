@@ -102,6 +102,9 @@ int main() {
     assert(!rtlMmioRangeValid(1, 2, RTL8852BE_BAR2_SIZE));
     assert(!rtlMmioRangeValid(0, 4, 3));
     assert(!rtlMmioRangeValid(0, 3, RTL8852BE_BAR2_SIZE));
+    assert(RTL8852BE_PHY_CR_BASE == 0x10000); // Linux rtw89_phy_gen_ax.cr_base
+    assert(rtlMmioRangeValid(0x1fffc, 4, RTL8852BE_BAR2_SIZE));
+    assert(!rtlMmioRangeValid(0x20000, 4, RTL8852BE_BAR2_SIZE));
     assert(B_AX_ACH0_TXBD_INT == (1U << 3)); // Linux v6.12 pci.h
     assert(B_AX_MGNT_TXBD_INT == (1U << 11));
     assert(B_AX_AON_OFF_PC_EN == (1U << 23)); // Linux v6.12 reg.h
