@@ -58,6 +58,7 @@ jobs:
 
       - name: Build Distributable DMG Installer
         run: |
+          chmod +x scripts/*.sh installer/scripts/* 2>/dev/null || true
           ./scripts/build_dmg.sh
 
       - name: Upload Kext and Installer Artifacts
