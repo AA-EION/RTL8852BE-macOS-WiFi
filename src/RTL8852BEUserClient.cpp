@@ -100,6 +100,7 @@ IOReturn RTL8852BEUserClient::externalMethod(uint32_t selector,
                                             IOExternalMethodDispatch *dispatch,
                                             OSObject *target,
                                             void *reference) {
+    if (!fOwner || isInactive()) return kIOReturnNotAttached;
     if (selector >= kNumberOfMethods) return kIOReturnBadArgument;
     dispatch = (IOExternalMethodDispatch *)&sMethods[selector];
     target = this;
@@ -126,7 +127,9 @@ IOReturn RTL8852BEUserClient::sConnect(OSObject *target, void *reference, IOExte
     if (!me || !me->fOwner || !args->structureInput) return kIOReturnNotAttached;
     if (args->structureInputSize < sizeof(RTL8852BEConnectParams)) return kIOReturnBadArgument;
     const RTL8852BEConnectParams *params = (const RTL8852BEConnectParams *)args->structureInput;
-    return me->fOwner->connectToNetwork(params->ssid, params->passphrase, params->bssid);
+    uint8_t hasBssid = 0;
+    for (unsigned i = 0; i < 6; ++i) hasBssid |= params->bssid[i];
+    return me->fOwner->connectToNetwork(params->ssid, params->passphrase, hasBssid ? params->bssid : nullptr);
 }
 
 IOReturn RTL8852BEUserClient::sDisconnect(OSObject *target, void *reference, IOExternalMethodArguments *args) {
@@ -147,6 +150,7 @@ IOReturn RTL8852BEUserClient::sGetStatus(OSObject *target, void *reference, IOEx
 IOReturn RTL8852BEUserClient::sSetAntenna(OSObject *target, void *reference, IOExternalMethodArguments *args) {
     RTL8852BEUserClient *me = OSDynamicCast(RTL8852BEUserClient, target);
     if (!me || !me->fOwner) return kIOReturnNotAttached;
+    if (args->scalarInput[0] > 2) return kIOReturnBadArgument;
     uint8_t ant = (uint8_t)args->scalarInput[0];
     return me->fOwner->setAntennaMode(ant);
 }
@@ -154,6 +158,7 @@ IOReturn RTL8852BEUserClient::sSetAntenna(OSObject *target, void *reference, IOE
 IOReturn RTL8852BEUserClient::sReadReg(OSObject *target, void *reference, IOExternalMethodArguments *args) {
     RTL8852BEUserClient *me = OSDynamicCast(RTL8852BEUserClient, target);
     if (!me || !me->fOwner) return kIOReturnNotAttached;
+    if (args->scalarInput[0] > UINT32_MAX || args->scalarInput[1] > UINT32_MAX) return kIOReturnBadArgument;
     uint32_t addr = (uint32_t)args->scalarInput[0];
     uint32_t width = (uint32_t)args->scalarInput[1];
     uint32_t val = 0;
@@ -169,8 +174,10 @@ IOReturn RTL8852BEUserClient::sWriteReg(OSObject *target, void *reference, IOExt
     RTL8852BEUserClient *me = OSDynamicCast(RTL8852BEUserClient, target);
     if (!me || !me->fOwner) return kIOReturnNotAttached;
     if (!me->fIsAdmin) return kIOReturnNotPrivileged;
+    if (args->scalarInput[0] > UINT32_MAX || args->scalarInput[1] > UINT32_MAX) return kIOReturnBadArgument;
     uint32_t addr = (uint32_t)args->scalarInput[0];
     uint32_t width = (uint32_t)args->scalarInput[1];
+    if (args->scalarInput[2] > UINT32_MAX) return kIOReturnBadArgument;
     uint32_t val = (uint32_t)args->scalarInput[2];
     return me->fOwner->diagWriteReg(addr, width, val);
 }
@@ -178,6 +185,7 @@ IOReturn RTL8852BEUserClient::sWriteReg(OSObject *target, void *reference, IOExt
 IOReturn RTL8852BEUserClient::sReadRF(OSObject *target, void *reference, IOExternalMethodArguments *args) {
     RTL8852BEUserClient *me = OSDynamicCast(RTL8852BEUserClient, target);
     if (!me || !me->fOwner) return kIOReturnNotAttached;
+    if (args->scalarInput[0] > 1 || args->scalarInput[1] > 0xFF) return kIOReturnBadArgument;
     uint8_t path = (uint8_t)args->scalarInput[0];
     uint32_t addr = (uint32_t)args->scalarInput[1];
     uint32_t val = 0;
@@ -193,8 +201,10 @@ IOReturn RTL8852BEUserClient::sWriteRF(OSObject *target, void *reference, IOExte
     RTL8852BEUserClient *me = OSDynamicCast(RTL8852BEUserClient, target);
     if (!me || !me->fOwner) return kIOReturnNotAttached;
     if (!me->fIsAdmin) return kIOReturnNotPrivileged;
+    if (args->scalarInput[0] > 1 || args->scalarInput[1] > 0xFF) return kIOReturnBadArgument;
     uint8_t path = (uint8_t)args->scalarInput[0];
     uint32_t addr = (uint32_t)args->scalarInput[1];
+    if (args->scalarInput[2] > UINT32_MAX) return kIOReturnBadArgument;
     uint32_t val = (uint32_t)args->scalarInput[2];
     return me->fOwner->diagWriteRF(path, addr, val);
 }

@@ -1,7 +1,7 @@
 #!/bin/bash
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Issen Software Group
-# Stop the running driver (if any) so the new version can be loaded.
+# Stop utility processes before replacing their application files.
 /usr/bin/killall RTL8852BEWirelessUtility rtl8852be_cli 2>/dev/null || true
 if /usr/bin/kmutil showloaded 2>/dev/null | /usr/bin/grep -q com.rtl8852be.macos.wifi; then
     /usr/bin/kmutil unload -b com.rtl8852be.macos.wifi 2>/dev/null || \

@@ -14,40 +14,11 @@ echo "=== Building Native macOS GUI Application & DMG Installer ==="
 # 1. Ensure kext and CLI are built
 make -C "${PROJECT_DIR}" all
 
-# 2. Prepare .app bundle layout
-rm -rf "${APP_BUNDLE}"
-mkdir -p "${APP_BUNDLE}/Contents/MacOS"
-mkdir -p "${APP_BUNDLE}/Contents/Resources"
-
-# 3. Reuse the checked-in icon; packaging must not depend on a live graphics session.
-cp "${PROJECT_DIR}/gui/AppIcon.icns" "${APP_BUNDLE}/Contents/Resources/AppIcon.icns"
-
-# 4. Compile Swift GUI binary
-echo "[*] Compiling Swift/AppKit GUI binary..."
-swiftc -O -parse-as-library -swift-version 5 -target x86_64-apple-macosx14.0 \
-    -import-objc-header "${PROJECT_DIR}/gui/RTL8852BEBridge.h" \
-    -framework AppKit -framework SwiftUI -framework IOKit -framework ServiceManagement \
-    "${PROJECT_DIR}"/gui/Sources/*.swift "${PROJECT_DIR}"/gui/Sources/Views/*.swift \
-    -o "${APP_BUNDLE}/Contents/MacOS/RTL8852BEWirelessUtility"
-
-# 5. Populate Bundle Resources (Info.plist, RTL8852BEWiFi.kext, rtl8852be_cli, stage_opencore.sh)
-cp "${PROJECT_DIR}/gui/Info.plist" "${APP_BUNDLE}/Contents/Info.plist"
-cp -R "${PROJECT_DIR}/build/RTL8852BEWiFi.kext" "${APP_BUNDLE}/Contents/Resources/RTL8852BEWiFi.kext"
-cp "${PROJECT_DIR}/tools/rtl8852be_cli" "${APP_BUNDLE}/Contents/Resources/rtl8852be_cli"
-cp "${PROJECT_DIR}/scripts/load_test_kext.sh" "${APP_BUNDLE}/Contents/Resources/load_test_kext.sh"
-[ -f "${PROJECT_DIR}/docs/TESTING.md" ] && cp "${PROJECT_DIR}/docs/TESTING.md" "${APP_BUNDLE}/Contents/Resources/Testing Guide.txt" || true
-mkdir -p "${APP_BUNDLE}/Contents/Resources/Licenses"
-cp "${PROJECT_DIR}/LICENSE" "${APP_BUNDLE}/Contents/Resources/Licenses/"
-[ -f "${PROJECT_DIR}/NOTICE.md" ] && cp "${PROJECT_DIR}/NOTICE.md" "${APP_BUNDLE}/Contents/Resources/Licenses/" || true
-cp "${PROJECT_DIR}/LICENSES/"*.txt "${APP_BUNDLE}/Contents/Resources/Licenses/" 2>/dev/null || true
-
-# 6. Ad-hoc sign the .app bundle
-codesign --force --deep --sign - "${APP_BUNDLE}"
-codesign --verify --deep --strict "${APP_BUNDLE}"
-echo "[+] Signed and verified ${APP_BUNDLE}"
+# Build the shared RTL87-style SwiftUI app and include the completed build artifacts.
+make -C "${PROJECT_DIR}" app
 
 # 7. Build the installer package (app -> /Applications, CLI -> /usr/local/bin).
-#    The kext stays inside the app and is loaded after login only; it is never installed
+#    The kext stays inside the app; loading is currently blocked. It is never installed
 #    where macOS would start it at boot. Nothing touches NVRAM or the EFI partition.
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "${PROJECT_DIR}/src/Info.plist")"
 PKG_WORK="${PROJECT_DIR}/build/pkg"
@@ -89,10 +60,11 @@ mkdir -p "${DMG_ROOT}"
 cp "${PKG_OUT}" "${DMG_ROOT}/Install RTL8852BE WiFi.pkg"
 cp "${PROJECT_DIR}/scripts/uninstall.sh" "${DMG_ROOT}/uninstall.sh"
 cp "${PROJECT_DIR}/installer/resources/welcome.txt" "${DMG_ROOT}/Read Me.txt"
+cp "${PROJECT_DIR}/docs/AUDIT.md" "${DMG_ROOT}/Audit.txt"
 mkdir -p "${DMG_ROOT}/Licenses"
 cp "${PROJECT_DIR}/LICENSE" "${DMG_ROOT}/Licenses/"
-[ -f "${PROJECT_DIR}/NOTICE.md" ] && cp "${PROJECT_DIR}/NOTICE.md" "${DMG_ROOT}/Licenses/" || true
-cp "${PROJECT_DIR}/LICENSES/"*.txt "${DMG_ROOT}/Licenses/" 2>/dev/null || true
+cp "${PROJECT_DIR}/NOTICE.md" "${DMG_ROOT}/Licenses/"
+cp "${PROJECT_DIR}/LICENSES/"*.txt "${DMG_ROOT}/Licenses/"
 
 mkdir -p "${PROJECT_DIR}/dist"
 rm -f "${DMG_OUT}"

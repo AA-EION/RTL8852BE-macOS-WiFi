@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <IOKit/IOKitLib.h>
 #include "../src/RTL8852BE_ipc.h"
+#include "../src/RTL8852BE_protocol.hpp"
 
 static const char *stateToString(uint32_t state) {
     switch (state) {
@@ -15,7 +16,7 @@ static const char *stateToString(uint32_t state) {
         case kRTLStateAuthenticating: return "AUTHENTICATING";
         case kRTLStateAssociating:    return "ASSOCIATING";
         case kRTLStateHandshake:      return "WPA2_4WAY_HANDSHAKE";
-        case kRTLStateConnected:      return "CONNECTED (Wi-Fi 6 AX)";
+        case kRTLStateConnected:      return "CONNECTED";
         default:                      return "UNKNOWN";
     }
 }
@@ -59,7 +60,7 @@ static int cmdStatus(io_connect_t conn) {
            st.connected_bssid[0], st.connected_bssid[1], st.connected_bssid[2],
            st.connected_bssid[3], st.connected_bssid[4], st.connected_bssid[5]);
     printf("  Channel    : %u (%s)\n", st.channel, st.is_5ghz ? "5 GHz" : "2.4 GHz");
-    printf("  Standard   : %s\n", st.is_wifi6 ? "Wi-Fi 6 (802.11ax)" : "802.11ac/n");
+    printf("  Standard   : %s\n", st.is_wifi6 ? "Wi-Fi 6 (802.11ax)" : "Unknown");
     printf("  Antenna    : %s\n", st.ant_mode == 0 ? "2x2 MIMO (Auto)" : (st.ant_mode == 1 ? "Path A (Main)" : "Path B (Aux)"));
     printf("  TX Rate    : %u Mbps\n", st.tx_rate_mbps);
     printf("  RX Rate    : %u Mbps\n", st.rx_rate_mbps);
@@ -73,7 +74,22 @@ static int cmdScan(io_connect_t conn) {
         fprintf(stderr, "[!] kMethodScan failed (0x%08x)\n", kr);
         return 1;
     }
-    usleep(800000); // Wait for sweep
+    bool complete = false;
+    for (unsigned i = 0; i < 100; ++i) {
+        usleep(100000);
+        RTL8852BEStatus status = {};
+        size_t size = sizeof(status);
+        kr = IOConnectCallStructMethod(conn, kMethodGetStatus, nullptr, 0, &status, &size);
+        if (kr != KERN_SUCCESS) {
+            fprintf(stderr, "[!] Scan status failed (0x%08x)\n", kr);
+            return 1;
+        }
+        if (status.state != kRTLStateScanning) { complete = true; break; }
+    }
+    if (!complete) {
+        fprintf(stderr, "[!] Scan timed out.\n");
+        return 1;
+    }
 
     RTL8852BEScanResults results;
     memset(&results, 0, sizeof(results));
@@ -88,7 +104,7 @@ static int cmdScan(io_connect_t conn) {
     printf("%-4s  %-32s  %-17s  %-4s  %-4s  %-6s  %-6s\n",
            "NUM", "SSID", "BSSID", "CHAN", "RSSI", "BAND", "SEC");
     printf("----------------------------------------------------------------------------------\n");
-    for (uint32_t i = 0; i < results.count; i++) {
+    for (uint32_t i = 0; i < results.count && i < RTL8852BE_MAX_SCAN_APS; i++) {
         const RTL8852BEDiscoveredAP &ap = results.aps[i];
         printf("%-4u  %-32s  %02X:%02X:%02X:%02X:%02X:%02X  %-4u  %3d   %-6s  %-6s\n",
                i + 1,
@@ -103,6 +119,10 @@ static int cmdScan(io_connect_t conn) {
 }
 
 static int cmdConnect(io_connect_t conn, const char *ssid, const char *passphrase) {
+    if (!rtl8852beConnectStringsValid(ssid, passphrase)) {
+        fprintf(stderr, "SSID must be 1–32 bytes; WPA2 passphrase must be 8–63 bytes.\n");
+        return 1;
+    }
     RTL8852BEConnectParams params;
     memset(&params, 0, sizeof(params));
     strncpy(params.ssid, ssid, RTL8852BE_MAX_SSID_LEN);
@@ -150,11 +170,11 @@ static int cmdDiag(io_connect_t conn) {
         return 1;
     }
     printf("=== Realtek RTL8852BE Hardware Diagnostics ===\n");
-    printf("  Driver Version : v%u\n", diag.version);
+    printf("  Driver Version : format v%u\n", diag.version);
     printf("  Init Stage     : %u / 8\n", diag.init_stage);
     printf("  PCI Device ID  : 0x%04X (Subsystem 0x%04X:0x%04X Lenovo LOQ)\n",
            diag.pci_device_id, diag.subsys_vendor, diag.subsys_device);
-    printf("  Firmware Vers  : 0x%08X (FreeRTOS Ready)\n", diag.fw_version);
+    printf("  Firmware Vers  : 0x%08X (0 = unknown)\n", diag.fw_version);
     printf("  MAC Address    : %02X:%02X:%02X:%02X:%02X:%02X\n",
            diag.mac_addr[0], diag.mac_addr[1], diag.mac_addr[2],
            diag.mac_addr[3], diag.mac_addr[4], diag.mac_addr[5]);
@@ -172,17 +192,17 @@ static int cmdDiag(io_connect_t conn) {
     printf("  RX Counters    : Mgmt=%u, Beacons=%u, Data=%u, CRC_Err=%u, Dropped=%u\n",
            diag.rx_mgmt, diag.rx_beacons, diag.rx_data, diag.rx_crc_err, diag.rx_dropped);
     printf("  Traffic Stats  : RX: %llu bytes, TX: %llu bytes\n",
-           diag.rx_bytes, diag.tx_bytes);
+           (unsigned long long)diag.rx_bytes, (unsigned long long)diag.tx_bytes);
     return 0;
 }
 
 int main(int argc, char *argv[]) {
     if (argc < 2) {
         printf("Realtek RTL8852BE Wi-Fi 6 Utility CLI (macOS)\n");
-        printf("Usage: %s <status|scan|connect|disconnect|ant|diag|reg|rf|iqk>\n", argv[0]);
+        printf("Usage: %s <status|scan|connect|disconnect|ant|diag>\n", argv[0]);
         printf("  status                   - Display current link and card status\n");
         printf("  scan                     - Scan for available 2.4 GHz & 5 GHz networks\n");
-        printf("  connect <SSID> [pass]    - Connect to WPA2 network\n");
+        printf("  connect <SSID> <password>    - Connect to WPA2 network\n");
         printf("  disconnect               - Disconnect from current network\n");
         printf("  ant <0|1|2>              - Set antenna (0=Auto 2x2 MIMO, 1=Path A, 2=Path B)\n");
         printf("  diag                     - Display hardware registers and diagnostics\n");
@@ -198,8 +218,8 @@ int main(int argc, char *argv[]) {
     } else if (strcmp(argv[1], "scan") == 0) {
         ret = cmdScan(conn);
     } else if (strcmp(argv[1], "connect") == 0) {
-        if (argc < 3) {
-            fprintf(stderr, "Usage: %s connect <SSID> [password]\n", argv[0]);
+        if (argc != 4) {
+            fprintf(stderr, "Usage: %s connect <SSID> <password>\n", argv[0]);
             ret = 1;
         } else {
             ret = cmdConnect(conn, argv[2], argc >= 4 ? argv[3] : nullptr);
@@ -210,8 +230,11 @@ int main(int argc, char *argv[]) {
         if (argc < 3) {
             fprintf(stderr, "Usage: %s ant <0|1|2>\n", argv[0]);
             ret = 1;
+        } else if (strlen(argv[2]) != 1 || argv[2][0] < '0' || argv[2][0] > '2') {
+            fprintf(stderr, "Antenna must be 0, 1, or 2.\n");
+            ret = 1;
         } else {
-            ret = cmdAntenna(conn, (uint8_t)atoi(argv[2]));
+            ret = cmdAntenna(conn, (uint8_t)(argv[2][0] - '0'));
         }
     } else if (strcmp(argv[1], "diag") == 0) {
         ret = cmdDiag(conn);

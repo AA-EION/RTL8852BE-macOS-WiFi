@@ -11,7 +11,7 @@ if %errorlevel% neq 0 (
 )
 if not exist build mkdir build
 echo [*] Compiling test_hardware_contract...
-cl /nologo /std:c++17 /EHsc /O2 /Isrc tests/test_hardware_contract.cpp src/RTL8852BE_tables.cpp src/RTL8852BE_firmware.cpp /Fe:build/test_hardware_contract.exe
+cl /nologo /std:c++17 /EHsc /O2 /Isrc tests/test_hardware_contract.cpp src/RTL8852BE_tables.cpp src/RTL8852BE_firmware.cpp src/RTL8852BE_firmware_parser.cpp /Fe:build/test_hardware_contract.exe
 if errorlevel 1 goto error
 echo [*] Running build\test_hardware_contract.exe...
 build\test_hardware_contract.exe
@@ -26,6 +26,24 @@ build\test_crypto_bounds.exe
 if errorlevel 1 goto error
 
 echo.
+echo [*] Compiling and running firmware parser regressions...
+cl /nologo /std:c++17 /EHsc /O2 /Isrc tests/test_firmware_parser.cpp src/RTL8852BE_firmware.cpp src/RTL8852BE_firmware_parser.cpp /Fe:build/test_firmware_parser.exe
+if errorlevel 1 goto error
+build\test_firmware_parser.exe
+if errorlevel 1 goto error
+
+echo [*] Compiling and running protocol bounds regressions...
+cl /nologo /std:c++17 /EHsc /O2 /Isrc tests/test_protocol_bounds.cpp /Fe:build/test_protocol_bounds.exe
+if errorlevel 1 goto error
+build\test_protocol_bounds.exe
+if errorlevel 1 goto error
+
+echo [*] Compiling and running kernel-source bring-up regressions...
+cl /nologo /std:c++17 /EHsc /O2 /Isrc tests/test_bringup.cpp src/RTL8852BE_efuse.cpp src/RTL8852BE_phy.cpp src/RTL8852BE_power.cpp src/RTL8852BE_tables.cpp /Fe:build/test_bringup.exe
+if errorlevel 1 goto error
+build\test_bringup.exe
+if errorlevel 1 goto error
+
 echo [*] Compiling test_runner...
 cl /nologo /std:c++17 /EHsc /O2 /Isrc /Itests /Itests/mock ^
    tests/mock/mock_crypto.cpp ^

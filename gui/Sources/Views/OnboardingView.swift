@@ -20,7 +20,7 @@ struct OnboardingView: View {
                     }
                     Text("RTL8852BE Wi-Fi")
                         .font(.system(.largeTitle, design: .rounded).weight(.semibold))
-                    Text("Wi-Fi for the Realtek RTL8852BE card on macOS.")
+                    Text("Experimental RTL8852BE utility for macOS.")
                         .font(.title3)
                         .foregroundStyle(.secondary)
                     Text("By Issen Software Group")
@@ -32,16 +32,12 @@ struct OnboardingView: View {
                 VStack(spacing: Design.Spacing.gutter) {
                     step(1, done: model.hardwarePresent, title: "Wi-Fi card detected",
                          detail: model.hardwarePresent
-                            ? "Realtek RTL8852BE (pci10ec,b723) found."
+                            ? "Realtek RTL8852BE (pci10ec,b852 / pci10ec,b85b) found."
                             : "No RTL8852BE was found on the PCI bus. This app only supports that card.")
-                    step(2, done: model.bootArgPresent, title: "Boot flag set",
-                         detail: model.bootArgPresent
-                            ? "rtl8852be_experimental=1 is present."
-                            : "Add rtl8852be_experimental=1 to boot-args in your OpenCore config.plist, then restart. "
-                              + "This app never changes NVRAM or your EFI.")
+                    step(2, done: model.hardwareBringupReady, title: "Hardware support in development",
+                         detail: "Device initialization is incomplete. This build cannot load the Wi-Fi driver for hardware testing.")
                     step(3, done: model.driverLoaded, title: "Driver running",
-                         detail: "Load the driver after each login. The first time (and after updates) macOS asks you "
-                               + "to allow it in System Settings › Privacy & Security; allow it, restart, and load it again.")
+                         detail: "Hardware loading will become available after the implementation and validation are complete.")
                 }
                 .frame(maxWidth: 560)
 
@@ -57,7 +53,7 @@ struct OnboardingView: View {
                     }
                     .primaryActionButtonStyle()
                     .controlSize(.large)
-                    .disabled(model.isBusy || !model.hardwarePresent || !model.bootArgPresent)
+                    .disabled(model.isBusy || !model.hardwareBringupReady || !model.hardwarePresent || !model.bootArgPresent)
 
                     Button("Privacy & Security…") {
                         NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security")!)
@@ -87,6 +83,9 @@ struct OnboardingView: View {
 
     /// Why "Load Driver…" is disabled, so the button never greys out silently.
     private var blockedReason: String? {
+        if !model.hardwareBringupReady {
+            return "Hardware testing is unavailable in this development build."
+        }
         if !model.hardwarePresent {
             return "No RTL8852BE card was found, so there is nothing to load the driver for."
         }

@@ -2,7 +2,7 @@
 # Copyright (c) 2026 Issen Software Group
 
 CXX ?= clang++
-CXXFLAGS ?= -std=c++17 -Wall -Wextra -O2 -I. -Imock
+CXXFLAGS ?= -std=c++17 -Wall -Wextra -O2 -I. -Imock -MMD -MP
 
 SRCS = \
     mock/mock_crypto.cpp \
@@ -24,6 +24,9 @@ SRCS = \
 OBJS = $(SRCS:.cpp=.o)
 TARGET = test_runner
 
+-include $(OBJS:.o=.d)
+.DEFAULT_GOAL := all
+
 .PHONY: all test clean
 
 all: $(TARGET)
@@ -38,4 +41,4 @@ test: $(TARGET)
 	./$(TARGET)
 
 clean:
-	rm -f $(OBJS) $(TARGET)
+	rm -f $(OBJS) $(OBJS:.o=.d) $(TARGET)

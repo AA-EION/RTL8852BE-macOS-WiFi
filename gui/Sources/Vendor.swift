@@ -30,7 +30,7 @@ enum Vendor {
             .paragraphStyle: paragraph,
         ]
         let credits = NSMutableAttributedString(
-            string: "Made by Issen Software Group. Hardware support ported from the Linux rtlwifi driver.\n",
+            string: "Made by Issen Software Group. Hardware support derived from the Linux rtw89 driver.\n",
             attributes: base)
         var link = base
         link[.link] = website

@@ -1,0 +1,326 @@
+// SPDX-License-Identifier: GPL-2.0-only
+// Copyright (c) 2020-2022 Realtek Corporation
+// Generated from audited Linux v6.12 reg.h/mac.h; do not edit.
+#pragma once
+
+#ifndef B_AX_AFC_AFEDIG
+#define B_AX_AFC_AFEDIG 0x00020000U
+#endif
+#ifndef B_AX_AFSM_PCIE_SUS_EN
+#define B_AX_AFSM_PCIE_SUS_EN 0x00001000U
+#endif
+#ifndef B_AX_AFSM_WLSUS_EN
+#define B_AX_AFSM_WLSUS_EN 0x00000800U
+#endif
+#ifndef B_AX_AON_OFF_PC_EN
+#define B_AX_AON_OFF_PC_EN 0x00800000U
+#endif
+#ifndef B_AX_APDM_HPDN
+#define B_AX_APDM_HPDN 0x00008000U
+#endif
+#ifndef B_AX_APFM_OFFMAC
+#define B_AX_APFM_OFFMAC 0x00000200U
+#endif
+#ifndef B_AX_APFM_SWLPS
+#define B_AX_APFM_SWLPS 0x00000400U
+#endif
+#ifndef B_AX_APFN_ONMAC
+#define B_AX_APFN_ONMAC 0x00000100U
+#endif
+#ifndef B_AX_BBRPT_EN
+#define B_AX_BBRPT_EN 0x00020000U
+#endif
+#ifndef B_AX_C1_L1_MASK
+#define B_AX_C1_L1_MASK 0x00000003U
+#endif
+#ifndef B_AX_C3_L1_MASK
+#define B_AX_C3_L1_MASK 0x00000030U
+#endif
+#ifndef B_AX_CMAC_DMA_EN
+#define B_AX_CMAC_DMA_EN 0x00000010U
+#endif
+#ifndef B_AX_CMAC_EN
+#define B_AX_CMAC_EN 0x40000000U
+#endif
+#ifndef B_AX_CMAC_RXEN
+#define B_AX_CMAC_RXEN 0x10000000U
+#endif
+#ifndef B_AX_CMAC_TXEN
+#define B_AX_CMAC_TXEN 0x20000000U
+#endif
+#ifndef B_AX_DISPATCHER_EN
+#define B_AX_DISPATCHER_EN 0x00040000U
+#endif
+#ifndef B_AX_DIS_WLBT_LPSEN_LOPC
+#define B_AX_DIS_WLBT_LPSEN_LOPC 0x00000002U
+#endif
+#ifndef B_AX_DIS_WLBT_PDNSUSEN_SOPC
+#define B_AX_DIS_WLBT_PDNSUSEN_SOPC 0x00040000U
+#endif
+#ifndef B_AX_DLE_CPUIO_EN
+#define B_AX_DLE_CPUIO_EN 0x00080000U
+#endif
+#ifndef B_AX_DLE_PLE_EN
+#define B_AX_DLE_PLE_EN 0x00800000U
+#endif
+#ifndef B_AX_DLE_WDE_EN
+#define B_AX_DLE_WDE_EN 0x04000000U
+#endif
+#ifndef B_AX_DMACREG_GCKEN
+#define B_AX_DMACREG_GCKEN 0x00008000U
+#endif
+#ifndef B_AX_DMAC_FUNC_EN
+#define B_AX_DMAC_FUNC_EN 0x20000000U
+#endif
+#ifndef B_AX_DMAC_TBL_EN
+#define B_AX_DMAC_TBL_EN 0x00200000U
+#endif
+#ifndef B_AX_EN_WLON
+#define B_AX_EN_WLON 0x00010000U
+#endif
+#ifndef B_AX_FEN_BBRSTB
+#define B_AX_FEN_BBRSTB 0x00000001U
+#endif
+#ifndef B_AX_FEN_BB_GLB_RSTN
+#define B_AX_FEN_BB_GLB_RSTN 0x00000002U
+#endif
+#ifndef B_AX_FORCE_CMACREG_GCKEN
+#define B_AX_FORCE_CMACREG_GCKEN 0x00008000U
+#endif
+#ifndef B_AX_ISO_EB2CORE
+#define B_AX_ISO_EB2CORE 0x00000100U
+#endif
+#ifndef B_AX_MAC_FUNC_EN
+#define B_AX_MAC_FUNC_EN 0x40000000U
+#endif
+#ifndef B_AX_MAC_SEC_EN
+#define B_AX_MAC_SEC_EN 0x00010000U
+#endif
+#ifndef B_AX_MPDU_PROC_EN
+#define B_AX_MPDU_PROC_EN 0x10000000U
+#endif
+#ifndef B_AX_PCIE_CALIB_EN_V1
+#define B_AX_PCIE_CALIB_EN_V1 0x00001000U
+#endif
+#ifndef B_AX_PHYINTF_EN
+#define B_AX_PHYINTF_EN 0x00000020U
+#endif
+#ifndef B_AX_PINMUX_EESK_FUNC_SEL_MASK
+#define B_AX_PINMUX_EESK_FUNC_SEL_MASK 0x000000F0U
+#endif
+#ifndef B_AX_PKT_BUF_EN
+#define B_AX_PKT_BUF_EN 0x00400000U
+#endif
+#ifndef B_AX_PKT_IN_EN
+#define B_AX_PKT_IN_EN 0x00100000U
+#endif
+#ifndef B_AX_PLATFORM_EN
+#define B_AX_PLATFORM_EN 0x00000001U
+#endif
+#ifndef B_AX_PTCLTOP_EN
+#define B_AX_PTCLTOP_EN 0x00000008U
+#endif
+#ifndef B_AX_PWC_EV2EF_B14
+#define B_AX_PWC_EV2EF_B14 0x00004000U
+#endif
+#ifndef B_AX_PWC_EV2EF_B15
+#define B_AX_PWC_EV2EF_B15 0x00008000U
+#endif
+#ifndef B_AX_RDY_SYSPWR
+#define B_AX_RDY_SYSPWR 0x00020000U
+#endif
+#ifndef B_AX_REG_ZCDC_H_MASK
+#define B_AX_REG_ZCDC_H_MASK 0x00060000U
+#endif
+#ifndef B_AX_RMAC_EN
+#define B_AX_RMAC_EN 0x00000001U
+#endif
+#ifndef B_AX_R_AX_VADJ_MASK
+#define B_AX_R_AX_VADJ_MASK 0x0000000FU
+#endif
+#ifndef B_AX_SCHEDULER_EN
+#define B_AX_SCHEDULER_EN 0x00000004U
+#endif
+#ifndef B_AX_STA_SCH_EN
+#define B_AX_STA_SCH_EN 0x01000000U
+#endif
+#ifndef B_AX_SYM_CTRL_SPS_PWMFREQ
+#define B_AX_SYM_CTRL_SPS_PWMFREQ 0x00000400U
+#endif
+#ifndef B_AX_SYM_PADPDN_WL_PTA_1P3
+#define B_AX_SYM_PADPDN_WL_PTA_1P3 0x00000040U
+#endif
+#ifndef B_AX_SYM_PADPDN_WL_RFC_1P3
+#define B_AX_SYM_PADPDN_WL_RFC_1P3 0x00000020U
+#endif
+#ifndef B_AX_SYSON_DIS_PMCR_AX_WRMSK
+#define B_AX_SYSON_DIS_PMCR_AX_WRMSK 0x00000004U
+#endif
+#ifndef B_AX_TMAC_EN
+#define B_AX_TMAC_EN 0x00000002U
+#endif
+#ifndef B_AX_TXPKT_CTRL_EN
+#define B_AX_TXPKT_CTRL_EN 0x02000000U
+#endif
+#ifndef B_AX_VOL_L1_MASK
+#define B_AX_VOL_L1_MASK 0x0000000FU
+#endif
+#ifndef B_AX_VREFPFM_L_MASK
+#define B_AX_VREFPFM_L_MASK 0x03C00000U
+#endif
+#ifndef B_AX_WD_RLS_EN
+#define B_AX_WD_RLS_EN 0x08000000U
+#endif
+#ifndef B_AX_WL_XTAL_SI_ADDR_MASK
+#define B_AX_WL_XTAL_SI_ADDR_MASK 0x000000FFU
+#endif
+#ifndef B_AX_WL_XTAL_SI_BITMASK_MASK
+#define B_AX_WL_XTAL_SI_BITMASK_MASK 0x00FF0000U
+#endif
+#ifndef B_AX_WL_XTAL_SI_CMD_POLL
+#define B_AX_WL_XTAL_SI_CMD_POLL 0x80000000U
+#endif
+#ifndef B_AX_WL_XTAL_SI_DATA_MASK
+#define B_AX_WL_XTAL_SI_DATA_MASK 0x0000FF00U
+#endif
+#ifndef B_AX_WL_XTAL_SI_MODE_MASK
+#define B_AX_WL_XTAL_SI_MODE_MASK 0x03000000U
+#endif
+#ifndef PINMUX_EESK_FUNC_SEL_BT_LOG
+#define PINMUX_EESK_FUNC_SEL_BT_LOG 0x00000001U
+#endif
+#ifndef RTL8852B_RFE_05_SPS_ANA
+#define RTL8852B_RFE_05_SPS_ANA 0x00004A82U
+#endif
+#ifndef R_AX_AFE_LDO_CTRL
+#define R_AX_AFE_LDO_CTRL 0x00000020U
+#endif
+#ifndef R_AX_CMAC_FUNC_EN
+#define R_AX_CMAC_FUNC_EN 0x0000C000U
+#endif
+#ifndef R_AX_DMAC_FUNC_EN
+#define R_AX_DMAC_FUNC_EN 0x00008400U
+#endif
+#ifndef R_AX_EECS_EESK_FUNC_SEL
+#define R_AX_EECS_EESK_FUNC_SEL 0x000002D8U
+#endif
+#ifndef R_AX_HCI_LDO_CTRL
+#define R_AX_HCI_LDO_CTRL 0x0000007AU
+#endif
+#ifndef R_AX_PLATFORM_ENABLE
+#define R_AX_PLATFORM_ENABLE 0x00000088U
+#endif
+#ifndef R_AX_PMC_DBG_CTRL2
+#define R_AX_PMC_DBG_CTRL2 0x000000CCU
+#endif
+#ifndef R_AX_SPS_ANA_ON_CTRL2
+#define R_AX_SPS_ANA_ON_CTRL2 0x00000228U
+#endif
+#ifndef R_AX_SPS_DIG_OFF_CTRL0
+#define R_AX_SPS_DIG_OFF_CTRL0 0x00000400U
+#endif
+#ifndef R_AX_SPS_DIG_ON_CTRL0
+#define R_AX_SPS_DIG_ON_CTRL0 0x00000200U
+#endif
+#ifndef R_AX_SYS_ADIE_PAD_PWR_CTRL
+#define R_AX_SYS_ADIE_PAD_PWR_CTRL 0x00000018U
+#endif
+#ifndef R_AX_SYS_FUNC_EN
+#define R_AX_SYS_FUNC_EN 0x00000002U
+#endif
+#ifndef R_AX_SYS_ISO_CTRL
+#define R_AX_SYS_ISO_CTRL 0x00000000U
+#endif
+#ifndef R_AX_SYS_PW_CTRL
+#define R_AX_SYS_PW_CTRL 0x00000004U
+#endif
+#ifndef R_AX_SYS_SDIO_CTRL
+#define R_AX_SYS_SDIO_CTRL 0x00000070U
+#endif
+#ifndef R_AX_SYS_SWR_CTRL1
+#define R_AX_SYS_SWR_CTRL1 0x00000010U
+#endif
+#ifndef R_AX_WLAN_XTAL_SI_CTRL
+#define R_AX_WLAN_XTAL_SI_CTRL 0x00000270U
+#endif
+#ifndef R_AX_WLLPS_CTRL
+#define R_AX_WLLPS_CTRL 0x00000090U
+#endif
+#ifndef R_AX_WLRF_CTRL
+#define R_AX_WLRF_CTRL 0x000002F0U
+#endif
+#ifndef SW_LPS_OPTION
+#define SW_LPS_OPTION 0x0001A0B2U
+#endif
+#ifndef XTAL_SI_ACV_MASK
+#define XTAL_SI_ACV_MASK 0x0000000FU
+#endif
+#ifndef XTAL_SI_ANAPAR_WL
+#define XTAL_SI_ANAPAR_WL 0x00000090U
+#endif
+#ifndef XTAL_SI_CV
+#define XTAL_SI_CV 0x00000041U
+#endif
+#ifndef XTAL_SI_GND_SHDN_WL
+#define XTAL_SI_GND_SHDN_WL 0x00000040U
+#endif
+#ifndef XTAL_SI_LDO_LPS
+#define XTAL_SI_LDO_LPS 0x00000070U
+#endif
+#ifndef XTAL_SI_LPS_CAP
+#define XTAL_SI_LPS_CAP 0x0000000FU
+#endif
+#ifndef XTAL_SI_NORMAL_READ
+#define XTAL_SI_NORMAL_READ 0x00000001U
+#endif
+#ifndef XTAL_SI_NORMAL_WRITE
+#define XTAL_SI_NORMAL_WRITE 0x00000000U
+#endif
+#ifndef XTAL_SI_OFF_EI
+#define XTAL_SI_OFF_EI 0x00000008U
+#endif
+#ifndef XTAL_SI_OFF_WEI
+#define XTAL_SI_OFF_WEI 0x00000004U
+#endif
+#ifndef XTAL_SI_PON_EI
+#define XTAL_SI_PON_EI 0x00000002U
+#endif
+#ifndef XTAL_SI_PON_WEI
+#define XTAL_SI_PON_WEI 0x00000001U
+#endif
+#ifndef XTAL_SI_RF00
+#define XTAL_SI_RF00 0x00000001U
+#endif
+#ifndef XTAL_SI_RF10
+#define XTAL_SI_RF10 0x00000001U
+#endif
+#ifndef XTAL_SI_RFC2RF
+#define XTAL_SI_RFC2RF 0x00000010U
+#endif
+#ifndef XTAL_SI_SHDN_WL
+#define XTAL_SI_SHDN_WL 0x00000020U
+#endif
+#ifndef XTAL_SI_SRAM2RFC
+#define XTAL_SI_SRAM2RFC 0x00000080U
+#endif
+#ifndef XTAL_SI_SRAM_CTRL
+#define XTAL_SI_SRAM_CTRL 0x000000A1U
+#endif
+#ifndef XTAL_SI_SRAM_DIS
+#define XTAL_SI_SRAM_DIS 0x00000002U
+#endif
+#ifndef XTAL_SI_WL_RFC_S0
+#define XTAL_SI_WL_RFC_S0 0x00000080U
+#endif
+#ifndef XTAL_SI_WL_RFC_S1
+#define XTAL_SI_WL_RFC_S1 0x00000081U
+#endif
+#ifndef XTAL_SI_XTAL_XMD_2
+#define XTAL_SI_XTAL_XMD_2 0x00000024U
+#endif
+#ifndef XTAL_SI_XTAL_XMD_4
+#define XTAL_SI_XTAL_XMD_4 0x00000026U
+#endif
+#ifndef CHIP_CBV
+#define CHIP_CBV 0x00000001U
+#endif

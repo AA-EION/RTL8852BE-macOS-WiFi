@@ -1,43 +1,18 @@
-# Project: Realtek RTL8852BE macOS Wi-Fi Driver
+# RTL8852BE project status
 
-## Architecture
-The RTL8852BE driver provides native Wi-Fi 6 (802.11ax) network support for macOS, based on the mainline Linux kernel `drivers/net/wireless/realtek/rtw89/` driver subsystem.
+The project is a development prototype. Hardware bring-up, scanning, association, and network traffic have not been validated for this repository revision.
 
-- **Target Card**: Realtek RTL8852BE PCIe 802.11ax (`pci10ec,b852` / `pci10ec,b85b`, Lenovo Subsystem `17aa:4853`).
-- **Target Machine**: Lenovo LOQ 15IRH8 (Machine Type 82XV).
-- **Target OS**: macOS 14.0+ (Sonoma, Sequoia, and macOS 26.x Darwin x86_64).
+The authoritative comparison is [docs/AUDIT.md](docs/AUDIT.md), based directly on Linux v6.12 rtw89 and mac80211. The RTL8723BE repository supplied a hardware-tested macOS reference; its chip-specific implementation is not reusable as an AX hardware contract.
 
-## Deliverables & Status
-1. **Kernel Extension (`RTL8852BEWiFi.kext`)**:
-   - Class `RTL8852BE : public IOEthernetController`.
-   - BAR2 MMIO mapping, MSI interrupt handling, power management.
-   - TXBD/RXBD DMA ring engine with 32-bit coherent mask.
-   - Embedded `rtw8852b_fw.bin` (version 0.27.32.1) with MFW header parser.
-   - eFuse reader with logical stream decoding.
-   - PHY BB and RF register tables (Radio A & B via SWSI).
-   - 802.11 scanner, auth/assoc, and WPA2 4-way handshake engine.
-   - CCMP AES-128 CCM crypto engine.
-   - Status: **COMPLETE**
+| Component | Current status |
+| --- | --- |
+| IOKit controller and DMA | Prototype; startup blocked; AX TX/RX transport incomplete |
+| Firmware | Embedded image and bounded v0 parser; no download/boot transport |
+| eFuse | Physical/logical OTP transport and MAC/crystal/RFE decoder implemented; full calibration application missing |
+| PHY/RF tables | Exact Linux v6.12 pairs and conditional interpreter; gain/H2C/calibration integration missing |
+| WPA2/CCMP | Portable crypto tests pass; network protocol and key lifecycle incomplete |
+| IPC, CLI, GUI | RTL87 app layout/workflows, RTL88 ABI client and model regressions; native checks in CI |
+| Packaging | Development artifacts only; loading blocked |
+| Tests | Portable production regressions plus 57 legacy simulator cases; no hardware evidence |
 
-2. **User Client & IPC (`RTL8852BEUserClient`)**:
-   - `IOUserClient` subclass exposing external methods under command gate serialization.
-   - Diagnostics, register inspection, RF inspection, and antenna switching.
-   - Status: **COMPLETE**
-
-3. **Command Line Utility (`rtl8852be_cli`)**:
-   - Standalone CLI for status, scanning, connecting, disconnecting, and diagnostics.
-   - Status: **COMPLETE**
-
-4. **Native SwiftUI Menu Bar App (`RTL8852BE Wireless Utility.app`)**:
-   - Status hero card, Wi-Fi 6 network scanner, WPA2 connection dialog, antenna control, Lenovo LOQ hardware diagnostics.
-   - Status: **COMPLETE**
-
-5. **Test Suite**:
-   - `test_hardware_contract.cpp`: Production descriptor ABI, registers, DMA bounds, eFuse, firmware parsing.
-   - `test_crypto_bounds.cpp`: RFC 3394 KAT, IEEE 802.11 CCMP vector, PBKDF2 HMAC-SHA1.
-   - 57-Test Mock Hardware & 4-Tier Test Suite (`test_runner.cpp`): 57 / 57 passed (100%).
-   - Status: **COMPLETE**
-
-6. **Continuous Integration (CI)**:
-   - GitHub Actions workflow (`.github/workflows/ci.yml`) for macOS-14, Linux, and Windows builds.
-   - Status: **COMPLETE**
+Source-derived power/XTAL, chip-cut detection and eFuse identity are implemented with portable regressions. Remaining implementation order: calibration-map integration; MAC/DLE/H2C; firmware boot; AX DMA and interrupts; PHY/channel/calibration; MAC/key/regulatory integration; controlled hardware validation. Keep the shared readiness flag false until the audit's blockers and macOS lifecycle checks are resolved.

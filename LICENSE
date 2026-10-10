@@ -1,21 +1,31 @@
-MIT License
-
+RTL8852BE Wi-Fi — licensing overview
 Copyright (c) 2026 Issen Software Group
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+Licences apply per component; this repository is not wholly MIT licensed.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+1. MIT (LICENSES/MIT.txt)
+   Original app, CLI, IPC, IOUserClient, crypto, kext module stub, build and
+   installer scripts, tests (except the upstream reference snapshot), and
+   documentation retain their MIT terms.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+2. GPL-2.0-only (LICENSES/GPL-2.0-only.txt)
+   Linux-derived hardware support and firmware-container parsing:
+     src/RTL8852BE.cpp, src/RTL8852BE.hpp, src/RTL8852BE_hw.hpp,
+     src/RTL8852BE_tables.cpp, src/RTL8852BE_tables.hpp,
+     src/RTL8852BE_firmware_parser.cpp, src/RTL8852BE_efuse.cpp/.hpp,
+     src/RTL8852BE_phy.cpp/.hpp, src/RTL8852BE_power.cpp/.hpp,
+     src/RTL8852BE_linux_regs.hpp, src/RTL8852BE_register_io.hpp.
+   Linux rtw89 source generally offers GPL-2.0 OR BSD-3-Clause. This project
+   distributes its derived hardware code under the GPL-2.0 option, consistent
+   with its existing third-party notices. The compiled kernel extension as a
+   whole is GPL-2.0-only; corresponding source is this repository:
+   https://github.com/AA-EION/RTL8852BE-macOS-WiFi
+   The unmodified structure snapshot in tests/reference retains its upstream
+   GPL-2.0 OR BSD-3-Clause notice.
+
+3. Realtek firmware (LICENSES/LicenseRef-rtw89-firmware.txt)
+   src/rtw8852b_fw.bin and the embedded bytes in src/RTL8852BE_firmware.cpp
+   are redistributed unmodified under Realtek's firmware terms.
+
+The app and kernel extension communicate through the IOKit user-client
+interface as separate programs. See NOTICE.md for third-party attribution.

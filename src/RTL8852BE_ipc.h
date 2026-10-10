@@ -10,6 +10,9 @@
 #define RTL8852BE_MAX_PASSPHRASE_LEN  64
 #define RTL8852BE_MAX_SCAN_APS        64
 
+// Shared with the GUI; startup stays blocked until docs/AUDIT.md blockers close.
+#define RTL8852BE_HARDWARE_BRINGUP_READY 0
+
 enum RTL8852BEMethodIndex {
     kMethodScan           = 0,
     kMethodGetScanResults = 1,

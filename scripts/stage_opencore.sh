@@ -13,7 +13,7 @@ if [[ $# -ne 0 ]]; then
     exit 2
 fi
 
-echo "=== Realtek RTL8852BE (pci10ec,b723) macOS 26.6.2 Verification & OpenCore Staging ==="
+echo "=== Realtek RTL8852BE (pci10ec,b852 / pci10ec,b85b) experimental source build & OpenCore Staging ==="
 
 echo "[*] Building RTL8852BEWiFi.kext and rtl8852be_cli..."
 make -C "${PROJECT_DIR}" all
@@ -48,7 +48,7 @@ cat > "${STAGING_DIR}/config_plist_kernel_add_snippet.plist" <<'EOF'
 	<key>BundlePath</key>
 	<string>RTL8852BEWiFi.kext</string>
 	<key>Comment</key>
-	<string>Realtek RTL8852BE PCIe Wireless LAN Driver (pci10ec,b723)</string>
+	<string>Realtek RTL8852BE PCIe Wireless LAN Driver (pci10ec,b852 / pci10ec,b85b)</string>
 	<key>Enabled</key>
 	<false/>
 	<key>ExecutablePath</key>
@@ -56,7 +56,7 @@ cat > "${STAGING_DIR}/config_plist_kernel_add_snippet.plist" <<'EOF'
 	<key>MaxKernel</key>
 	<string></string>
 	<key>MinKernel</key>
-	<string>20.0.0</string>
+	<string>23.0.0</string>
 	<key>PlistPath</key>
 	<string>Contents/Info.plist</string>
 </dict>

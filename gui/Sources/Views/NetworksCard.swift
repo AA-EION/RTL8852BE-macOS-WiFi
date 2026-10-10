@@ -52,7 +52,7 @@ struct NetworksCard: View {
                 }
             }
             .buttonStyle(.borderless)
-            .disabled(model.isScanning)
+            .disabled(!model.driverLoaded || model.isScanning || model.isBusy || model.phase == .connected || model.phase == .connecting)
             .help("Scan again")
         }
     }
@@ -65,12 +65,13 @@ struct NetworksCard: View {
                 .symbolEffect(.variableColor.iterative, isActive: model.isScanning)
             Text(model.isScanning ? "Scanning…" : "No networks yet")
                 .font(.title3.weight(.semibold))
-            Text("The first scan also picks the antenna that hears best (about 3 seconds).")
+            Text(model.driverLoaded ? "Scan for nearby 2.4 GHz and 5 GHz networks." : "Load a supported driver build to scan for nearby networks.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
             if !model.isScanning {
                 Button("Scan") { Task { await model.scan() } }
+                    .disabled(!model.driverLoaded || model.isBusy || model.phase == .connected || model.phase == .connecting)
                     .primaryActionButtonStyle()
                     .padding(.top, Design.Spacing.tight)
             }
@@ -158,7 +159,7 @@ private struct JoinSheet: View {
                 Button("Join", action: submit)
                     .primaryActionButtonStyle()
                     .keyboardShortcut(.defaultAction)
-                    .disabled(password.count < 8 || password.count > 63)
+                    .disabled(password.utf8.count < 8 || password.utf8.count > 63)
             }
         }
         .padding(Design.Spacing.large)
@@ -166,7 +167,7 @@ private struct JoinSheet: View {
     }
 
     private func submit() {
-        guard (8...63).contains(password.count) else { return }
+        guard (8...63).contains(password.utf8.count) else { return }
         join(password)
         dismiss()
     }

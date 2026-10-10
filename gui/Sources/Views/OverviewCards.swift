@@ -40,7 +40,7 @@ struct ConnectionCard: View {
                  verticalSpacing: Design.Spacing.tight) {
                 row("Network", model.phase == .connected ? model.ssid : "—")
                 row("BSSID", model.phase == .connected ? model.bssid : "—")
-                row("Channel", model.channel > 0 ? "\(model.channel) (2.4 GHz)" : "—")
+                row("Channel", model.channel > 0 ? "\(model.channel) (\(model.channel > 14 ? "5 GHz" : "2.4 GHz"))" : "—")
                 row("Signal", model.phase == .connected ? "\(model.rssi) dBm" : "—")
                 row("Interface", model.interfaceName.isEmpty ? "—" : model.interfaceName)
                 row("IP address", model.ipAddress.isEmpty ? "—" : model.ipAddress)

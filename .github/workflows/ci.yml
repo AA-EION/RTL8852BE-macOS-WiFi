@@ -20,41 +20,21 @@ jobs:
           sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer || sudo xcode-select -r
           xcodebuild -version
 
-      - name: Verify Hardware Contract & Memory Safety (ASan/UBSan)
-        run: |
-          make test-hardware
+      - name: Run portable production regressions and legacy simulator
+        run: make test CXX=clang++
 
-      - name: Verify RFC 3394 Crypto & CCMP Bounds (ASan/UBSan)
-        run: |
-          make test-crypto
-
-      - name: Run Full 57-Test Mock Hardware Suite
-        run: |
-          make test
+      - name: Build SwiftUI app and run production app model regressions
+        run: make app test-app
 
       - name: Build RTL8852BEWiFi Kernel Extension (Kext)
         run: |
           make kext
-          kmutil print-diagnostics --bundle-path build/RTL8852BEWiFi.kext || true
+          codesign --verify --strict build/RTL8852BEWiFi.kext
+          kmutil print-diagnostics --bundle-path build/RTL8852BEWiFi.kext
 
       - name: Build Command Line Utility (rtl8852be_cli)
         run: |
           make cli
-
-      - name: Build Native SwiftUI GUI Utility App
-        run: |
-          mkdir -p "build/RTL8852BE Wireless Utility.app/Contents/MacOS"
-          mkdir -p "build/RTL8852BE Wireless Utility.app/Contents/Resources"
-          cp gui/Info.plist "build/RTL8852BE Wireless Utility.app/Contents/Info.plist"
-          if [ -f gui/AppIcon.icns ]; then
-            cp gui/AppIcon.icns "build/RTL8852BE Wireless Utility.app/Contents/Resources/AppIcon.icns"
-          fi
-          swiftc -target x86_64-apple-macosx14.0 -O -parse-as-library -swift-version 5 \
-            -import-objc-header gui/RTL8852BEBridge.h \
-            -framework AppKit -framework SwiftUI -framework IOKit -framework ServiceManagement \
-            gui/Sources/*.swift \
-            gui/Sources/Views/*.swift \
-            -o "build/RTL8852BE Wireless Utility.app/Contents/MacOS/RTL8852BEWirelessUtility"
 
       - name: Build Distributable DMG Installer
         run: |
@@ -83,26 +63,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y clang make build-essential
 
-      - name: Run Hardware Contract (Clang ASan/UBSan)
-        run: |
-          clang++ -std=c++17 -Wall -Wextra -fsanitize=address,undefined -Isrc tests/test_hardware_contract.cpp src/RTL8852BE_tables.cpp src/RTL8852BE_firmware.cpp -o build_hw_contract
-          ./build_hw_contract
-
-      - name: Run Crypto Verification (Clang ASan/UBSan)
-        run: |
-          clang++ -std=c++17 -Wall -Wextra -fsanitize=address,undefined -Isrc tests/test_crypto_bounds.cpp src/RTL8852BE_crypto.cpp -o build_crypto_bounds
-          ./build_crypto_bounds
-
-      - name: Run Boot Config Test
-        run: |
-          python3 tests/test_boot_config.py
-
-      - name: Run Full Mock Test Suite (57 Tests)
-        run: |
-          make -C tests test
+      - name: Run portable production regressions and legacy simulator
+        env:
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: make test CXX=clang++
 
   windows-build:
-    name: Windows MSVC Contract & Mock Suite
+    name: Windows MSVC Portable Regressions & Legacy Simulator
     runs-on: windows-latest
     steps:
       - name: Checkout Repository

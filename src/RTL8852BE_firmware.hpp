@@ -11,7 +11,7 @@
 extern const uint8_t rtw8852b_fw_bin[];
 extern const size_t rtw8852b_fw_bin_len;
 
-// Section info for parsed firmware suits
+// Section info for a parsed firmware suit
 struct Rtw89FwSectionInfo {
     uint32_t dl_addr;
     uint32_t len;
@@ -27,7 +27,8 @@ struct Rtw89FwParsedInfo {
     Rtw89FwSectionInfo sections[8];
 };
 
-// Parser helpers
+// Parse a supported static v0 MFW suit. Failure clears the output. This only
+// validates container bounds; it does not transfer or boot firmware on hardware.
 bool rtw89_parse_mfw_header(const uint8_t *data, size_t len, uint8_t target_cv, Rtw89FwParsedInfo *out);
 
 #endif // RTL8852BE_FIRMWARE_HPP

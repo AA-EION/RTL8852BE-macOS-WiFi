@@ -39,7 +39,7 @@ struct LogEntry: Identifiable {
     let message: String
 }
 
-struct WiFiNetwork: Identifiable, Hashable {
+struct WiFiNetwork: Identifiable, Hashable, Sendable {
     var id: String { bssid }
     let ssid: String
     let bssid: String
@@ -72,6 +72,7 @@ struct Throughput {
 @MainActor
 final class AppModel {
     // Environment / onboarding
+    let hardwareBringupReady = RTL8852BE_HARDWARE_BRINGUP_READY != 0
     var hardwarePresent = false
     var bootArgPresent = false
     var driverLoaded = false
@@ -84,7 +85,7 @@ final class AppModel {
     var bssid = ""
     var channel = 0
     var rssi = -100
-    var antenna = 2
+    var antenna = 0
     var interfaceName = ""
     var ipAddress = ""
     var connectedSince: Date?
@@ -106,13 +107,18 @@ final class AppModel {
     var logLevelFilter: LogLevel = .info
     var filteredLogs: [LogEntry] { logs.filter { $0.level >= logLevelFilter } }
 
+    private let client: any WirelessDriverClient
+    private let monitoringEnabled: Bool
     private var timer: Timer?
     private var lastCounters: (rx: UInt64, tx: UInt64, at: Date)?
     private var lastState: UInt32 = .max
 
-    init() {
+    init(client: any WirelessDriverClient = IOKitDriverClient(), startMonitoring: Bool = true) {
+        self.client = client
+        self.monitoringEnabled = startMonitoring
         log("RTL8852BE Wi-Fi \(Vendor.appVersion) started on macOS "
             + ProcessInfo.processInfo.operatingSystemVersionString)
+        guard startMonitoring else { return }
         refreshEnvironment()
         refresh()
         timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
@@ -146,30 +152,38 @@ final class AppModel {
     }
 
     func refresh() {
-        var conn: io_connect_t = 0
-        guard rtl_open_client(&conn) == 0 else {
-            if driverLoaded { log("Driver is no longer loaded.", .warning) }
+        let snapshot: DriverSnapshot
+        do { snapshot = try client.snapshot() }
+        catch {
+            if driverLoaded { log("Driver is no longer available: \(error.localizedDescription)", .warning) }
             driverLoaded = false
             phase = .noDriver
             interfaceName = ""
             ipAddress = ""
             connectedSince = nil
+            driverVersion = nil
+            diag = nil
+            macAddress = ""
+            bssid = ""
+            ssid = ""
+            channel = 0
+            rssi = -100
+            throughput = Throughput()
+            lastCounters = nil
+            lastState = .max
             return
         }
-        defer { rtl_close_client(conn) }
         if !driverLoaded {
             driverLoaded = true
             log("Connected to RTL8852BEWiFi.kext.")
-            Task { await loadDriverVersion() }
+            if monitoringEnabled { Task { await loadDriverVersion() } }
         }
-
-        var st = RTL8852BEStatus()
-        guard rtl_get_status(conn, &st) == 0 else { return }
+        let st = snapshot.status
         bssid = Self.mac(st.connected_bssid)
-        ssid = withUnsafeBytes(of: st.connected_ssid) { String(cString: $0.bindMemory(to: CChar.self).baseAddress!) }
+        ssid = IOKitDriverClient.string(st.connected_ssid)
         channel = Int(st.channel)
         rssi = Int(st.rssi)
-        antenna = st.ant_mode == 2 ? 2 : 1
+        antenna = Int(st.ant_mode)
 
         if st.state != lastState {
             if st.state == 5 {
@@ -188,19 +202,20 @@ final class AppModel {
         default: phase = isScanning ? .scanning : .disconnected
         }
 
-        var diagnostics = RTL8852BEDiag()
-        if rtl_get_diag(conn, &diagnostics) == 0 {
-            diag = diagnostics
-            macAddress = Self.mac(diagnostics.mac_addr)
-        }
+        diag = snapshot.diagnostics
+        macAddress = snapshot.diagnostics.map { Self.mac($0.mac_addr) } ?? ""
 
         updateInterface()
     }
 
     private func updateInterface() {
-        var name = [CChar](repeating: 0, count: 32)
-        interfaceName = rtl_copy_bsd_name(&name, name.count) == 0 ? String(cString: name) : ""
-        guard !interfaceName.isEmpty else { return }
+        interfaceName = client.interfaceName()
+        guard !interfaceName.isEmpty else {
+            ipAddress = ""
+            throughput = Throughput()
+            lastCounters = nil
+            return
+        }
 
         var ifap: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&ifap) == 0, let first = ifap else { return }
@@ -222,8 +237,8 @@ final class AppModel {
         }
         ipAddress = address
         // macOS 26 leaves if_data input counters at zero for IOKit Ethernet drivers;
-        // the driver's own counters (diagnostics v3+) are authoritative when present.
-        if let d = diag, d.version >= 3 {
+        // the driver's own counters (diagnostics v1+) are authoritative when present.
+        if let d = diag, d.version >= 1 {
             rx = d.rx_bytes
             tx = d.tx_bytes
         }
@@ -249,95 +264,76 @@ final class AppModel {
     // MARK: - Actions
 
     func scan() async {
-        guard driverLoaded, !isScanning else { return }
+        guard driverLoaded, !isScanning, !isBusy, phase != .connected, phase != .connecting else { return }
         isScanning = true
         phase = .scanning
-        log("Scanning 2.4 GHz channels 1–13…")
-        let result: (Int32, [WiFiNetwork]) = await Task.detached {
-            var conn: io_connect_t = 0
-            guard rtl_open_client(&conn) == 0 else { return (-1, []) }
-            defer { rtl_close_client(conn) }
-            let rc = rtl_trigger_scan(conn)
-            var raw = RTL8852BEScanResults()
-            guard rc == 0, rtl_get_scan_results(conn, &raw) == 0 else { return (rc, []) }
-            return (0, Self.parse(raw))
-        }.value
-        isScanning = false
-        if result.0 == 0 {
-            networks = result.1
+        defer { isScanning = false; refresh() }
+        log("Scanning 2.4 GHz and 5 GHz channels…")
+        let client = self.client
+        do {
+            networks = try await Task.detached { try await client.scan() }.value
             lastScan = Date()
             log("Found \(networks.count) network\(networks.count == 1 ? "" : "s").")
-        } else {
-            log("Scan failed (IOReturn 0x\(String(UInt32(bitPattern: result.0), radix: 16))).", .error)
+        } catch {
+            log("Scan failed: \(error.localizedDescription)", .error)
+            alertMessage = error.localizedDescription
         }
-        refresh()
     }
 
     func join(_ network: WiFiNetwork, password: String) async {
+        guard driverLoaded, !isBusy, !isScanning else { return }
         isBusy = true
-        defer { isBusy = false }
+        joiningNetwork = network
+        defer { isBusy = false; joiningNetwork = nil }
         log("Joining \(network.displayName) (\(network.bssid), channel \(network.channel))…")
-        var params = RTL8852BEConnectParams()
-        withUnsafeMutableBytes(of: &params.ssid) { buf in
-            let bytes = Array(network.ssid.utf8.prefix(Int(RTL8852BE_MAX_SSID_LEN)))
-            buf.copyBytes(from: bytes)
-        }
-        withUnsafeMutableBytes(of: &params.passphrase) { buf in
-            let bytes = Array(password.utf8.prefix(Int(RTL8852BE_MAX_PASSPHRASE_LEN)))
-            buf.copyBytes(from: bytes)
-        }
-        let b = network.bssidBytes
-        if b.count == 6 { params.bssid = (b[0], b[1], b[2], b[3], b[4], b[5]) }
-        let paramsCopy = params
-        let rc: Int32 = await Task.detached {
-            var conn: io_connect_t = 0
-            guard rtl_open_client(&conn) == 0 else { return -1 }
-            defer { rtl_close_client(conn) }
-            var p = paramsCopy
-            return rtl_connect_ap(conn, &p)
-        }.value
-        guard rc == 0 else {
-            alertMessage = rc == Int32(bitPattern: 0xE00002C2)
-                ? "The password must be 8–63 characters."
-                : "The driver refused the request (IOReturn 0x\(String(UInt32(bitPattern: rc), radix: 16)))."
-            log("Join failed: \(alertMessage ?? "")", .error)
+        let client = self.client
+        do { try await Task.detached { try client.join(network, password: password) }.value }
+        catch {
+            alertMessage = error.localizedDescription
+            log("Join failed: \(error.localizedDescription)", .error)
             return
         }
-        // The 802.11 exchange and WPA2 handshake complete asynchronously in the driver.
         for _ in 0..<30 {
             try? await Task.sleep(for: .milliseconds(500))
             refresh()
             if phase == .connected { return }
-            if phase == .disconnected { break }
+            if phase == .disconnected || phase == .noDriver { break }
         }
-        if phase != .connected {
-            alertMessage = "Could not join \(network.displayName). Check the password and that the network is in range."
-            log("Join timed out or was rejected.", .error)
-        }
+        alertMessage = "Could not join \(network.displayName). Check the password and that the network is in range."
+        log("Join timed out or was rejected.", .error)
     }
 
     func disconnect() async {
-        await Task.detached {
-            var conn: io_connect_t = 0
-            guard rtl_open_client(&conn) == 0 else { return }
-            defer { rtl_close_client(conn) }
-            _ = rtl_disconnect_ap(conn)
-        }.value
+        guard driverLoaded, !isBusy else { return }
+        isBusy = true
+        defer { isBusy = false }
+        let client = self.client
+        do { try await Task.detached { try client.disconnect() }.value }
+        catch {
+            alertMessage = error.localizedDescription
+            log("Disconnect failed: \(error.localizedDescription)", .error)
+        }
         refresh()
     }
 
     func setAntenna(_ value: Int) {
-        var conn: io_connect_t = 0
-        guard rtl_open_client(&conn) == 0 else { return }
-        defer { rtl_close_client(conn) }
-        if rtl_set_antenna(conn, UInt8(value)) == 0 {
+        do {
+            try client.setAntenna(value)
             antenna = value
-            log("Wi-Fi antenna set to \(value == 2 ? "AUX (S0)" : "MAIN (S1)").")
+            log("Wi-Fi antenna set to \(value == 0 ? "Auto (2x2)" : (value == 2 ? "Path B (Aux)" : "Path A (Main)")).")
+        } catch {
+            alertMessage = error.localizedDescription
+            log("Antenna request failed: \(error.localizedDescription)", .error)
         }
     }
 
     /// Asks for an administrator password and loads the driver (installed copy first).
     func loadDriver() async {
+        guard hardwareBringupReady else {
+            alertMessage = "Hardware testing is unavailable in this development build. The driver is incomplete."
+            log(alertMessage!, .warning)
+            return
+        }
         guard let resources = Bundle.main.resourcePath else { return }
         isBusy = true
         defer { isBusy = false }
@@ -366,22 +362,6 @@ final class AppModel {
     }
 
     // MARK: - Helpers
-
-    nonisolated private static func parse(_ raw: RTL8852BEScanResults) -> [WiFiNetwork] {
-        var copy = raw
-        let count = min(Int(copy.count), Int(RTL8852BE_MAX_SCAN_APS))
-        return withUnsafeBytes(of: &copy.aps) { buf in
-            let aps = buf.bindMemory(to: RTL8852BEDiscoveredAP.self)
-            return (0..<count).map { i -> WiFiNetwork in
-                var ap = aps[i]
-                let ssid = withUnsafeBytes(of: &ap.ssid) { String(cString: $0.bindMemory(to: CChar.self).baseAddress!) }
-                let b = [ap.bssid.0, ap.bssid.1, ap.bssid.2, ap.bssid.3, ap.bssid.4, ap.bssid.5]
-                return WiFiNetwork(ssid: ssid, bssid: Self.mac(ap.bssid), bssidBytes: b,
-                                   channel: Int(ap.channel), rssi: Int(ap.rssi), secured: ap.is_wpa2 != 0)
-            }
-            .sorted { $0.rssi > $1.rssi }
-        }
-    }
 
     nonisolated static func mac(_ m: (UInt8, UInt8, UInt8, UInt8, UInt8, UInt8)) -> String {
         String(format: "%02x:%02x:%02x:%02x:%02x:%02x", m.0, m.1, m.2, m.3, m.4, m.5)

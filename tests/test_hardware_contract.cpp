@@ -4,6 +4,7 @@
 #include "RTL8852BE_hw.hpp"
 #include "RTL8852BE_tables.hpp"
 #include "RTL8852BE_firmware.hpp"
+#include "reference/rtw8852b_efuse_layout.hpp"
 #include <cassert>
 #include <cstdio>
 #include <cstring>
@@ -21,13 +22,11 @@ static uint16_t shortAt(const void *p, size_t offset) {
 }
 
 int main() {
-    printf("[*] Running RTL8852BE Production Hardware Contract Verification...\n");
+    printf("[*] Running RTL8852BE portable header/bounds checks (not hardware validation)...\n");
 
     // 1. Verify Descriptor ABI and Byte Layouts
     assert(sizeof(Rtw89TxBd) == 8);
     assert(sizeof(Rtw89RxBd) == 8);
-    assert(sizeof(Rtw89TxWd) == 40);
-    assert(sizeof(Rtw89RxDesc) == 32);
 
     // TXBD Layout & Operations
     Rtw89TxBd txbd = {};
@@ -51,20 +50,15 @@ int main() {
     assert(shortAt(&rxbd, 0) == 2048);
     assert(wordAt(&rxbd, 4) == 0x23456000);
 
-    // TXWD Layout
-    Rtw89TxWd txwd;
-    txwd.init(1500, Q_BE, 1);
-    assert(((txwd.dword0 >> RTW89_TXWD_WP_OFFSET_SHIFT) & 0xFF) == 40);
-    assert((txwd.dword0 & RTW89_TXWD_WD_INFO_EN) != 0);
-    assert((txwd.dword1 & 0xFF) == 1); // mac_id
-    assert(((txwd.dword1 >> RTW89_TXWD_QSEL_SHIFT) & 0x1F) == 0); // Q_BE
-    assert(((txwd.dword1 >> RTW89_TXWD_PKT_LEN_SHIFT) & 0xFFFF) == 1500);
+    // TXWD/RXD prototypes are incomplete; do not assert their layout as a
+    // hardware contract. See Linux core.h/txrx.h and docs/AUDIT.md.
 
     // Queue selection mapping
     assert(rtl8852be_queue_select(Q_MGNT) == 0x12);
     assert(rtl8852be_queue_select(Q_BE) == 0);
-    assert(rtl8852be_queue_select(Q_VO) == 6);
-    assert(rtl8852be_queue_select(Q_VI) == 5);
+    assert(rtl8852be_queue_select(Q_VO) == 3);
+    assert(rtl8852be_queue_select(Q_VI) == 2);
+    assert(rtl8852be_queue_select(Q_HI) == 0x11);
     assert(rtl8852be_queue_select(Q_BK) == 1);
 
     // 2. Hardware Registers & Offsets Contract (rtw89 pci.h / reg.h)
@@ -100,6 +94,24 @@ int main() {
     assert(!rtlDmaRangeValid(0, 256, 256)); // NULL address
     assert(!rtlDmaRangeValid(0x10000001, 256, 256)); // Misaligned
     assert(!rtlDmaRangeValid(0x10000000, 0, 256)); // Zero length
+    assert(!rtlDmaRangeValid(UINT64_MAX - 15, 32, 1)); // addition must not wrap
+    assert(!rtlDmaRangeValid(UINT64_MAX, 2, 1));
+    assert(rtlMmioRangeValid(0xfffc, 4, RTL8852BE_BAR2_SIZE));
+    assert(!rtlMmioRangeValid(0xffff, 4, RTL8852BE_BAR2_SIZE));
+    assert(!rtlMmioRangeValid(UINT32_MAX, 4, RTL8852BE_BAR2_SIZE));
+    assert(!rtlMmioRangeValid(1, 2, RTL8852BE_BAR2_SIZE));
+    assert(!rtlMmioRangeValid(0, 4, 3));
+    assert(!rtlMmioRangeValid(0, 3, RTL8852BE_BAR2_SIZE));
+    assert(B_AX_ACH0_TXBD_INT == (1U << 3)); // Linux v6.12 pci.h
+    assert(B_AX_MGNT_TXBD_INT == (1U << 11));
+    assert(B_AX_AON_OFF_PC_EN == (1U << 23)); // Linux v6.12 reg.h
+    assert(B_AX_DIS_WLBT_LPSEN_LOPC == (1U << 1));
+    assert(EFUSE_PHYSICAL_SIZE_AX == 1216); // rtw8852b_chip_info
+    assert(EFUSE_SECURITY_CTRL_SIZE_AX == 4);
+    assert(EFUSE_MAC_ADDR_OFFSET_PCIE == offsetof(rtw8852bx_efuse, e));
+    assert(EFUSE_XTAL_K_OFFSET == offsetof(rtw8852bx_efuse, xtal_k));
+    assert(EFUSE_RFE_TYPE_OFFSET == offsetof(rtw8852bx_efuse, rfe_type));
+    assert(RR_CFGCH_V1 == 0x10018 && RR_LCKST == 0xCF);
 
     // 4. Verification of Production PHY Tables
     assert(RTL8852BE_PHY_BB_REGS_COUNT == 1013);
@@ -120,52 +132,8 @@ int main() {
     assert(RTL8852BE_PHY_RADIOB_REGS_COUNT == 8392);
     assert(RTL8852BE_PHY_NCTL_REGS_COUNT == 1320);
 
-    // 5. eFuse Logical Stream Decoding Contract
-    {
-        assert(EFUSE_LOGICAL_SIZE_AX == 2048);
-        assert(EFUSE_MAC_ADDR_OFFSET_PCIE + 6 <= EFUSE_LOGICAL_SIZE_AX);
-
-        uint8_t phys[EFUSE_PHYSICAL_SIZE_AX];
-        uint8_t log[EFUSE_LOGICAL_SIZE_AX];
-        std::memset(phys, 0xFF, sizeof(phys));
-        std::memset(log, 0xFF, sizeof(log));
-
-        // Synthesize an eFuse entry: block 0x84 (logical 0x420..0x427), word 1..3 present
-        // hdr1: (blk & 0x0F) << 4 | 0x00? Wait: GET_EFUSE_BLK_IDX: ((hdr2 & 0xF0) >> 4) | ((hdr1 & 0x0F) << 4)
-        // For blk = 0x84: (hdr1 & 0x0F) = 0x08, (hdr2 & 0xF0) = 0x40 -> hdr1 = 0x08, hdr2 = 0x40 | word_en
-        // word_en: active-low. words 1,2,3 present -> word 0 disabled (bit 0 = 1, bit 1,2,3 = 0) -> word_en = 0x01
-        phys[0] = 0x08;
-        phys[1] = 0x41; // word_en = 0001b (words 1, 2, 3 present)
-        // word 1 (0x422, 0x423): 0xAA, 0x1C (MAC byte 0 at 0x423)
-        phys[2] = 0xAA; phys[3] = 0x1C;
-        // word 2 (0x424, 0x425): 0x39, 0x47 (MAC bytes 1, 2)
-        phys[4] = 0x39; phys[5] = 0x47;
-        // word 3 (0x426, 0x427): 0xAB, 0xCD (MAC bytes 3, 4)
-        phys[6] = 0xAB; phys[7] = 0xCD;
-
-        size_t phy_idx = 0;
-        while (phy_idx < 8) {
-            uint8_t h1 = phys[phy_idx];
-            uint8_t h2 = phys[phy_idx + 1];
-            if (INVALID_EFUSE_HEADER(h1, h2)) break;
-            uint8_t blk = GET_EFUSE_BLK_IDX(h1, h2);
-            uint8_t word_en = h2 & 0x0F;
-            phy_idx += 2;
-            for (int w = 0; w < 4; w++) {
-                if (INVALID_EFUSE_CONTENT(word_en, w)) continue;
-                size_t l_idx = BLOCK_IDX_TO_LOGICAL_IDX(blk, w);
-                log[l_idx] = phys[phy_idx];
-                log[l_idx + 1] = phys[phy_idx + 1];
-                phy_idx += 2;
-            }
-        }
-        assert(log[0x422] == 0xAA);
-        assert(log[0x423] == 0x1C);
-        assert(log[0x424] == 0x39);
-        assert(log[0x425] == 0x47);
-        assert(log[0x426] == 0xAB);
-        assert(log[0x427] == 0xCD);
-    }
+    assert(EFUSE_LOGICAL_SIZE_AX == 2048);
+    assert(EFUSE_MAC_ADDR_OFFSET_PCIE + 6 <= EFUSE_LOGICAL_SIZE_AX);
 
     // 6. Firmware Image MFW Parsing Contract
     {
@@ -181,6 +149,6 @@ int main() {
         assert(fw_info.sections[0].offset + fw_info.sections[0].len <= rtw8852b_fw_bin_len);
     }
 
-    printf("[+] RTL8852BE Hardware Contract Verification PASSED!\n");
+    printf("[+] RTL8852BE portable header/bounds checks PASSED.\n");
     return 0;
 }

@@ -3,13 +3,15 @@
 
 import urllib.request
 import re
-import os
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
 
 def main():
     print("Fetching rtw8852b_table.c from Linux kernel tree...")
-    url = "https://raw.githubusercontent.com/torvalds/linux/master/drivers/net/wireless/realtek/rtw89/rtw8852b_table.c"
+    url = "https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/net/wireless/realtek/rtw89/rtw8852b_table.c"
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    content = urllib.request.urlopen(req).read().decode("utf-8")
+    content = urllib.request.urlopen(req, timeout=30).read().decode("utf-8")
 
     tables = {
         "RTL8852BE_PHY_BB_REGS": "rtw89_8852b_phy_bb_regs",
@@ -20,8 +22,10 @@ def main():
     }
 
     hpp_lines = [
-        "// SPDX-License-Identifier: MIT",
+        "// SPDX-License-Identifier: GPL-2.0-only",
         "// Copyright (c) 2026 Issen Software Group",
+        "// Copyright (c) 2020-2022 Realtek Corporation",
+        "// Source: Linux v6.12 drivers/net/wireless/realtek/rtw89/rtw8852b_table.c",
         "",
         "#ifndef RTL8852BE_TABLES_HPP",
         "#define RTL8852BE_TABLES_HPP",
@@ -37,8 +41,10 @@ def main():
     ]
 
     cpp_lines = [
-        "// SPDX-License-Identifier: MIT",
+        "// SPDX-License-Identifier: GPL-2.0-only",
         "// Copyright (c) 2026 Issen Software Group",
+        "// Copyright (c) 2020-2022 Realtek Corporation",
+        "// Source: Linux v6.12 drivers/net/wireless/realtek/rtw89/rtw8852b_table.c",
         "",
         '#include "RTL8852BE_tables.hpp"',
         ""
@@ -46,9 +52,15 @@ def main():
 
     for sym, ksym in tables.items():
         idx = content.find(ksym)
+        if idx < 0:
+            raise ValueError(f"Missing upstream table: {ksym}")
         end = content.find("};", idx)
+        if end < 0:
+            raise ValueError(f"Unterminated upstream table: {ksym}")
         block = content[idx:end]
         pairs = re.findall(r"\{\s*(0x[0-9a-fA-F]+)\s*,\s*(0x[0-9a-fA-F]+)\s*\}", block)
+        if not pairs:
+            raise ValueError(f"Empty upstream table: {ksym}")
         print(f"{sym}: parsed {len(pairs)} pairs")
         hpp_lines.append(f"extern const Rtw89Reg2Def {sym}[{len(pairs)}];")
         hpp_lines.append(f"extern const size_t {sym}_COUNT;")
@@ -64,11 +76,11 @@ def main():
     hpp_lines.append("#endif // RTL8852BE_TABLES_HPP\n")
     cpp_lines.append("")
 
-    os.makedirs("src", exist_ok=True)
-    with open("src/RTL8852BE_tables.hpp", "w", encoding="utf-8") as f:
+    (ROOT / "src").mkdir(exist_ok=True)
+    with open(ROOT / "src/RTL8852BE_tables.hpp", "w", encoding="utf-8") as f:
         f.write("\n".join(hpp_lines))
 
-    with open("src/RTL8852BE_tables.cpp", "w", encoding="utf-8") as f:
+    with open(ROOT / "src/RTL8852BE_tables.cpp", "w", encoding="utf-8") as f:
         f.write("\n".join(cpp_lines))
 
     print("Tables generated successfully in src/!")

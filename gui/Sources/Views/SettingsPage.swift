@@ -34,21 +34,21 @@ struct SettingsPage: View {
     private var driverSection: some View {
         Section("Driver") {
             LabeledContent {
-                Text(model.driverVersion.map { "Loaded · v\($0)" } ?? "Loaded")
+                Text(model.driverLoaded ? (model.driverVersion.map { "Loaded · v\($0)" } ?? "Loaded") : "Not loaded")
                     .foregroundStyle(.secondary)
             } label: {
                 Label("RTL8852BEWiFi.kext", systemImage: "checkmark.shield")
             }
             if let d = model.diag {
-                LabeledContent("Firmware", value: "v\(d.fw_version >> 16).\(d.fw_version & 0xFFFF)")
+                LabeledContent("Firmware", value: d.fw_version == 0 ? "Unknown" : "\((d.fw_version >> 24) & 0xFF).\((d.fw_version >> 16) & 0xFF).\((d.fw_version >> 8) & 0xFF).\(d.fw_version & 0xFF)")
                 LabeledContent("Hardware MAC", value: model.macAddress)
                 LabeledContent("Received frames", value: Format.count(UInt64(d.rx_desc_done)))
             }
             HStack {
-                Button(model.isBusy ? "Working…" : "Reload Driver…") {
+                Button(model.isBusy ? "Working…" : (model.driverLoaded ? "Reload Driver…" : "Load Driver…")) {
                     Task { await model.loadDriver() }
                 }
-                .disabled(model.isBusy)
+                .disabled(model.isBusy || !model.hardwareBringupReady)
                 .help("Unloads and loads the driver again (administrator password required)")
                 Spacer()
                 Button("Privacy & Security…") {
@@ -64,15 +64,16 @@ struct SettingsPage: View {
         Section {
             Picker("Wi-Fi antenna", selection: Binding(get: { model.antenna },
                                                         set: { model.setAntenna($0) })) {
-                Text("Main (S1)").tag(1)
-                Text("Aux (S0)").tag(2)
+                Text("Auto (2x2)").tag(0)
+                Text("Path A (Main)").tag(1)
+                Text("Path B (Aux)").tag(2)
             }
             .pickerStyle(.segmented)
+            .disabled(true)
         } header: {
             Text("Antenna")
         } footer: {
-            Text("The first scan after the driver loads measures both RF paths and keeps the better one. "
-                 + "Many HP boards have their single antenna on Aux.")
+            Text("RF path selection is not implemented in this development build.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -166,7 +167,7 @@ struct SettingsPage: View {
     private var aboutSection: some View {
         Section("About") {
             Text("Made by Issen Software Group. The app is MIT-licensed; the driver is GPL-2.0-only, "
-                 + "ported from the Linux rtlwifi rtl8852be driver. Firmware © Realtek Semiconductor Corp.")
+                 + "derived from the Linux rtw89 RTL8852B driver. Firmware © Realtek Semiconductor Corp.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
             LabeledContent("Made by Issen Software Group") {

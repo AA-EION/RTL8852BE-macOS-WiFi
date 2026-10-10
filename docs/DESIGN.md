@@ -1,80 +1,17 @@
-# Realtek RTL8852BE macOS Driver: Engineering Design Document
+# RTL8852BE development design
 
-## 1. System Architecture
-The RTL8852BE macOS driver is designed as a native `IOEthernetController` subclass for macOS 14.0+ (Sonoma, Sequoia, and macOS 26.x Darwin), attaching directly to the PCIe bus via `IOPCIDevice`.
+This document describes the intended boundaries of an incomplete driver. [AUDIT.md](AUDIT.md) records gaps and links directly to Linux v6.12.
 
-```
-+-------------------------------------------------------------------------+
-|                  macOS Networking Stack / BSD Socket Layer              |
-+-------------------------------------------------------------------------+
-                                    |
-                                    v
-+-------------------------------------------------------------------------+
-|                          IONetworkInterface                             |
-+-------------------------------------------------------------------------+
-                                    |
-+-------------------------------------------------------------------------+
-|                         IOEthernetController                            |
-|                          (Class: RTL8852BE)                             |
-|  - IOWorkLoop & IOCommandGate Serialization                             |
-|  - IOGatedOutputQueue Packet Egress                                     |
-|  - 802.11 Protocol Engine (Scan, Auth, Assoc, WPA2/WPA3 4-Way Handshake)|
-|  - CCMP AES-128 Encryption & Decryption (RFC 3610 / IEEE 802.11)       |
-+-------------------------------------------------------------------------+
-       |                                                    |
-       v                                                    v
-+-----------------------------+           +-------------------------------+
-|     RTL8852BEUserClient     |           |     PCIe Bus Layer & MMIO     |
-|   (IOUserClient Interface)  |           |     - BAR2 64KB MMIO Window   |
-|   - Scan / List / Connect   |           |     - 8-byte TXBD / RXBD Rings|
-|   - Status / Antenna Switch |           |     - MSI Interrupt Filter    |
-|   - Diagnostic Register/RF  |           |     - 32-bit Physical DMA     |
-+-----------------------------+           +-------------------------------+
-       |                                                    |
-       v                                                    v
-+-----------------------------+           +-------------------------------+
-|    rtl8852be_cli / GUI      |           |     Realtek RTL8852BE ASIC    |
-|  (RTL8852BE Utility.app)    |           |   (Lenovo LOQ 82XV PCIe 6)    |
-+-----------------------------+           +-------------------------------+
-```
+The controller is an IOEthernetController with a workloop, command gate, timers, PCI MMIO, and DMA mappings. It presents an Ethernet-style interface and needs a complete 802.11 station implementation behind that interface. Linux divides this responsibility between rtw89, mac80211, cfg80211, and a user-space supplicant; rtw89 alone is not a complete replacement for those layers.
 
-## 2. Key Subsystems & Design Contracts
+Hardware startup is blocked by the shared `RTL8852BE_HARDWARE_BRINGUP_READY` flag. Physical/logical eFuse reads, real cut detection and upstream power/XTAL operations are implemented with checked I/O. Missing firmware download returns failure. Firmware parsing does not imply execution. IQK and antenna switching return unsupported.
 
-### 2.1 Hardware Layer (`RTL8852BE_hw.hpp`)
-* **PCI Matching**: `IOPCIMatch = 0xB85210EC 0xB85B10EC`
-* **Subsystem**: Lenovo `0x17AA:0x4853` (Lenovo LOQ 15IRH8 Type 82XV)
-* **MMIO Window**: 64KB BAR2 space at `kIOPCIConfigBaseAddress2`.
-* **Power Management**:
-  * D0 power state transition.
-  * ASPM L1/L1.2 disabled in PCIe configuration space to prevent sleep freeze.
-  * System power sequence (`R_AX_SYS_PW_CTRL`, `R_AX_PLATFORM_ENABLE`).
-* **DMA Ring Architecture**:
-  * 8-byte TX Buffer Descriptors (`struct Rtw89TxBd`)
-  * 8-byte RX Buffer Descriptors (`struct Rtw89RxBd`)
-  * 40-byte TX Wireless Descriptor Header (`struct Rtw89TxWd`)
-  * 32-byte RX Status Descriptor Header (`struct Rtw89RxDesc`)
-  * 32-bit coherent DMA physical address masking (`< 4GB`).
+The portable firmware parser implements the embedded static v0 MFW container: cut/type selection, selected-image bounds, section/checksum lengths, and download-address masking. Dynamic headers, v1 headers, and signed security trailers require additional implementation and are rejected.
 
-### 2.2 Firmware Subsystem (`RTL8852BE_firmware.hpp`)
-* Embedded official `rtw8852b_fw.bin` from `linux-firmware` (1,035,232 bytes).
-* Multi-Firmware Container (`rtw89_mfw_hdr`) parser:
-  * Automatically detects and loads `RTW89_FW_NORMAL` for Chip Cut Version 1 (`0.27.32.1`).
-  * Downloads 3 firmware memory sections to chip.
-  * Handshakes with hardware via `R_AX_MCUFW_CTRL` and FreeRTOS ready status.
+The TXWD and RXD structures are prototype layouts. Replace them using upstream AX descriptor fields, TX write-pointer/address records, RXBD info, and short/long receive descriptors. PHY/RF tables use the implemented upstream conditional interpreter and RFE/cut selection; gain callbacks, RF H2C configuration and calibration orchestration remain required.
 
-### 2.3 Cryptographic Engine (`RTL8852BE_crypto.hpp`)
-* **AES-128 Core**: FIPS-197 AES block cipher.
-* **RFC 3394 Key Wrap / Unwrap**: Strictly bounded buffers, verified with Section 4.1 KAT.
-* **IEEE 802.11 CCMP**: AES-128 CCM mode (RFC 3610) with exact AAD construction (omitting Duration field) and 13-byte Nonce (Priority || Addr2 || PN).
-* **WPA2 PRF-512**: PTK derivation from PMK and nonces.
-* **PBKDF2-HMAC-SHA1**: Passphrase to PMK derivation (4096 iterations).
+IPC shares fixed-size structures between kernel, CLI, and Swift app. Portable helpers bound connect strings, beacon elements, and EAPOL-Key fields. They do not implement cipher negotiation, a supplicant, key reinstallation handling, rekeying, per-TID replay protection, or regulatory channel policy.
 
-### 2.4 User Client & IPC (`RTL8852BE_ipc.h`)
-* Scalable external methods:
-  * `kMethodScan` / `kMethodGetScanResults`
-  * `kMethodConnect` / `kMethodDisconnect`
-  * `kMethodGetStatus` / `kMethodSetAntenna`
-  * `kMethodReadReg` / `kMethodWriteReg`
-  * `kMethodReadRF` / `kMethodWriteRF`
-  * `kMethodGetDiag` / `kMethodIQCalibrate`
-* Supports both CLI (`rtl8852be_cli`) and Swift menu bar app (`RTL8852BE Wireless Utility.app`).
+Hardware-facing and lifecycle changes require macOS compilation plus failure-path, cancellation, DMA-idle, and hardware validation before removing the startup block. Portable crypto vectors and simulator tests establish only the functions they exercise.
+
+The SwiftUI app preserves the RTL8723BE layout and delegates hardware requests to an RTL8852BE-specific IOKit client. Each operation owns its connection; ABI results, strings and arrays are bounded. The injectable client lets native tests exercise the production model without hardware. Loading remains disabled by the same shared readiness flag.

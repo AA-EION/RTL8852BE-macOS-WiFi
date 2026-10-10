@@ -1,5 +1,7 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-2.0-only
 // Copyright (c) 2026 Issen Software Group
+// Copyright (c) 2020-2022 Realtek Corporation
+// Source: Linux v6.12 drivers/net/wireless/realtek/rtw89/rtw8852b_table.c
 
 #ifndef RTL8852BE_TABLES_HPP
 #define RTL8852BE_TABLES_HPP

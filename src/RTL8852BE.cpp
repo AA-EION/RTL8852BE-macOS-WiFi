@@ -1,10 +1,16 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-2.0-only
 // Copyright (c) 2026 Issen Software Group
+// Copyright (c) 2020-2022 Realtek Corporation
 // Realtek RTL8852BE macOS Driver (Wi-Fi 6 802.11ax PCIe)
 // Implementation based on Linux drivers/net/wireless/realtek/rtw89
 
 #include "RTL8852BE.hpp"
 #include <string.h>
+#include <sys/random.h>
+#include <pexpert/pexpert.h>
+#include "RTL8852BE_protocol.hpp"
+#include "RTL8852BE_phy.hpp"
+#include "RTL8852BE_power.hpp"
 
 #define super IOEthernetController
 OSDefineMetaClassAndStructors(RTL8852BE, IOEthernetController);
@@ -39,7 +45,7 @@ bool RTL8852BE::init(OSDictionary *properties) {
     fPciDeviceId = 0;
     fSubsysVendor = 0;
     fSubsysDevice = 0;
-    fCutVersion = 1;
+    fCutVersion = 0; // Detected from SYS_CFG1 after mapping the PCI function.
     fCurrentChannel = 1;
     fAntennaMode = 0; // 0 = 2x2 MIMO
 
@@ -47,6 +53,16 @@ bool RTL8852BE::init(OSDictionary *properties) {
     fTxRp = 0;
     fRxWp = 0;
     fRxRp = 0;
+    memset(&fTxRingDma, 0, sizeof(fTxRingDma));
+    memset(&fRxRingDma, 0, sizeof(fRxRingDma));
+    memset(fTxBufDma, 0, sizeof(fTxBufDma));
+    memset(fRxBufDma, 0, sizeof(fRxBufDma));
+    fTxRingVirt = nullptr;
+    fRxRingVirt = nullptr;
+    memset(fPMK, 0, sizeof(fPMK));
+    memset(fPTK, 0, sizeof(fPTK));
+    memset(fANonce, 0, sizeof(fANonce));
+    memset(fSNonce, 0, sizeof(fSNonce));
 
     fWifiState = kRTLStateDisconnected;
     fScanCurrentChanIdx = 0;
@@ -82,7 +98,16 @@ bool RTL8852BE::init(OSDictionary *properties) {
 }
 
 void RTL8852BE::cleanupResources() {
+    fHwReady = false;
+    fFwReady = false;
+    if (fOutputQueue) {
+        fOutputQueue->stop();
+        fOutputQueue->flush();
+        fOutputQueue = nullptr; // Owned by the superclass.
+    }
     disableInterrupts();
+    // Revoke bus mastering before releasing any IOVM mappings or buffers.
+    if (fPCIDevice) fPCIDevice->setBusMasterEnable(false);
 
     if (fScanTimer) {
         fScanTimer->cancelTimeout();
@@ -109,6 +134,7 @@ void RTL8852BE::cleanupResources() {
     } else {
         freeDMARings();
     }
+    fInitStage = 0;
 
     if (fNetif) {
         detachInterface(fNetif);
@@ -135,12 +161,23 @@ void RTL8852BE::cleanupResources() {
 }
 
 bool RTL8852BE::start(IOService *provider) {
+    // Check both containment conditions before superclass startup or PCI access.
+    if (!RTL8852BE_HARDWARE_BRINGUP_READY) {
+        IOLog("RTL8852BE: Hardware startup blocked: incomplete rtw89 bring-up; see docs/AUDIT.md.\n");
+        return false;
+    }
+    int experimental = 0;
+    if (!PE_parse_boot_argn("rtl8852be_experimental", &experimental, sizeof(experimental)) || experimental != 1) {
+        IOLog("RTL8852BE: Hardware startup requires rtl8852be_experimental=1.\n");
+        return false;
+    }
     IOLog("RTL8852BE: Starting driver for Realtek Wi-Fi 6 PCIe adapter...\n");
     if (!super::start(provider)) return false;
 
     fPCIDevice = OSDynamicCast(IOPCIDevice, provider);
     if (!fPCIDevice) {
         IOLog("RTL8852BE: Provider is not an IOPCIDevice!\n");
+        super::stop(provider);
         return false;
     }
     fPCIDevice->retain();
@@ -160,6 +197,7 @@ bool RTL8852BE::start(IOService *provider) {
     if (vendor != RTL_PCI_VENDOR_ID || (fPciDeviceId != RTL8852BE_PCI_DEVICE_ID && fPciDeviceId != RTL8852BE_PCI_DEVICE_ID_ALT)) {
         IOLog("RTL8852BE: Hardware mismatch!\n");
         cleanupResources();
+        super::stop(provider);
         return false;
     }
 
@@ -171,23 +209,33 @@ bool RTL8852BE::start(IOService *provider) {
     if (!pciWakeAndConfigure()) {
         IOLog("RTL8852BE: Failed to wake and configure PCI function!\n");
         cleanupResources();
+        super::stop(provider);
         return false;
     }
 
     // Map BAR2 MMIO
     fMMIOMap = fPCIDevice->mapDeviceMemoryWithRegister(kIOPCIConfigBaseAddress2);
-    if (!fMMIOMap || !fMMIOMap->getVirtualAddress()) {
+    if (!fMMIOMap || fMMIOMap->getLength() < RTL8852BE_BAR2_SIZE || !fMMIOMap->getVirtualAddress()) {
         IOLog("RTL8852BE: Failed to map BAR2 MMIO!\n");
         cleanupResources();
+        super::stop(provider);
         return false;
     }
     fMMIOBase = (volatile uint8_t *)fMMIOMap->getVirtualAddress();
+    const uint32_t chipVersion = mmio_read32(R_AX_SYS_CFG1);
+    if (chipVersion == UINT32_MAX) {
+        cleanupResources();
+        super::stop(provider);
+        return false;
+    }
+    fCutVersion = uint8_t((chipVersion & B_AX_CHIP_VER_MASK) >> 12);
 
     // Setup WorkLoop and CommandGate
     fWorkLoop = getWorkLoop();
     if (!fWorkLoop) {
         IOLog("RTL8852BE: Failed to obtain IOWorkLoop!\n");
         cleanupResources();
+        super::stop(provider);
         return false;
     }
     fWorkLoop->retain();
@@ -196,6 +244,7 @@ bool RTL8852BE::start(IOService *provider) {
     if (!fCommandGate || fWorkLoop->addEventSource(fCommandGate) != kIOReturnSuccess) {
         IOLog("RTL8852BE: Failed to create IOCommandGate!\n");
         cleanupResources();
+        super::stop(provider);
         return false;
     }
 
@@ -204,6 +253,7 @@ bool RTL8852BE::start(IOService *provider) {
     if (!fScanTimer || fWorkLoop->addEventSource(fScanTimer) != kIOReturnSuccess) {
         IOLog("RTL8852BE: Failed to create IOTimerEventSource!\n");
         cleanupResources();
+        super::stop(provider);
         return false;
     }
 
@@ -213,6 +263,7 @@ bool RTL8852BE::start(IOService *provider) {
     if (!fInterruptSource || fWorkLoop->addEventSource(fInterruptSource) != kIOReturnSuccess) {
         IOLog("RTL8852BE: Failed to create IOFilterInterruptEventSource!\n");
         cleanupResources();
+        super::stop(provider);
         return false;
     }
     fInterruptSource->enable();
@@ -221,6 +272,7 @@ bool RTL8852BE::start(IOService *provider) {
     if (!hwInit()) {
         IOLog("RTL8852BE: hwInit failed at stage %u!\n", fInitStage);
         cleanupResources();
+        super::stop(provider);
         return false;
     }
 
@@ -228,6 +280,7 @@ bool RTL8852BE::start(IOService *provider) {
     if (!attachInterface((IONetworkInterface**)&fNetif, false)) {
         IOLog("RTL8852BE: attachInterface failed!\n");
         cleanupResources();
+        super::stop(provider);
         return false;
     }
 
@@ -259,23 +312,29 @@ bool RTL8852BE::configureInterface(IONetworkInterface *netif) {
     if (!super::configureInterface(netif)) return false;
 
     fMediumDict = OSDictionary::withCapacity(1);
+    if (!fMediumDict) return false;
     IONetworkMedium *medium = IONetworkMedium::medium(
         kIOMediumEthernetAuto, 1000 * 1000000ULL, 0, 0, "Auto 802.11ax");
-    IONetworkMedium::addMedium(fMediumDict, medium);
+    if (!medium) {
+        fMediumDict->release();
+        fMediumDict = nullptr;
+        return false;
+    }
+    const bool added = IONetworkMedium::addMedium(fMediumDict, medium);
+    const bool published = added && publishMediumDictionary(fMediumDict);
+    if (published) setCurrentMedium(medium);
     medium->release();
-
-    publishMediumDictionary(fMediumDict);
-    setCurrentMedium(medium);
     fMediumDict->release();
     fMediumDict = nullptr;
 
-    return true;
+    return published;
 }
 
 IOReturn RTL8852BE::enable(IONetworkInterface *netif) {
+    if (!fHwReady) return kIOReturnNotReady;
     IOLog("RTL8852BE: Interface enabled.\n");
     enableInterrupts();
-    setLinkStatus(kIONetworkLinkValid | kIONetworkLinkActive, nullptr);
+    setLinkStatus(kIONetworkLinkValid, nullptr);
     return kIOReturnSuccess;
 }
 
@@ -293,45 +352,45 @@ IOReturn RTL8852BE::getHardwareAddress(IOEthernetAddress *addrP) {
 }
 
 IOReturn RTL8852BE::setPromiscuousMode(bool active) {
-    return kIOReturnSuccess;
+    return kIOReturnUnsupported;
 }
 
 IOReturn RTL8852BE::setMulticastMode(bool active) {
-    return kIOReturnSuccess;
+    return kIOReturnUnsupported;
 }
 
 IOReturn RTL8852BE::setMulticastList(IOEthernetAddress *addrs, UInt32 count) {
-    return kIOReturnSuccess;
+    return kIOReturnUnsupported;
 }
 
 // MMIO Helpers
 uint8_t RTL8852BE::mmio_read8(uint32_t offset) {
-    if (!fMMIOBase || offset >= RTL8852BE_BAR2_SIZE) return 0xFF;
+    if (!fMMIOBase || !fMMIOMap || !rtlMmioRangeValid(offset, 1, fMMIOMap->getLength())) return 0xFF;
     return *(volatile uint8_t *)(fMMIOBase + offset);
 }
 
 uint16_t RTL8852BE::mmio_read16(uint32_t offset) {
-    if (!fMMIOBase || offset + 1 >= RTL8852BE_BAR2_SIZE) return 0xFFFF;
+    if (!fMMIOBase || !fMMIOMap || !rtlMmioRangeValid(offset, 2, fMMIOMap->getLength())) return 0xFFFF;
     return *(volatile uint16_t *)(fMMIOBase + offset);
 }
 
 uint32_t RTL8852BE::mmio_read32(uint32_t offset) {
-    if (!fMMIOBase || offset + 3 >= RTL8852BE_BAR2_SIZE) return 0xFFFFFFFF;
+    if (!fMMIOBase || !fMMIOMap || !rtlMmioRangeValid(offset, 4, fMMIOMap->getLength())) return 0xFFFFFFFF;
     return *(volatile uint32_t *)(fMMIOBase + offset);
 }
 
 void RTL8852BE::mmio_write8(uint32_t offset, uint8_t val) {
-    if (!fMMIOBase || offset >= RTL8852BE_BAR2_SIZE) return;
+    if (!fMMIOBase || !fMMIOMap || !rtlMmioRangeValid(offset, 1, fMMIOMap->getLength())) return;
     *(volatile uint8_t *)(fMMIOBase + offset) = val;
 }
 
 void RTL8852BE::mmio_write16(uint32_t offset, uint16_t val) {
-    if (!fMMIOBase || offset + 1 >= RTL8852BE_BAR2_SIZE) return;
+    if (!fMMIOBase || !fMMIOMap || !rtlMmioRangeValid(offset, 2, fMMIOMap->getLength())) return;
     *(volatile uint16_t *)(fMMIOBase + offset) = val;
 }
 
 void RTL8852BE::mmio_write32(uint32_t offset, uint32_t val) {
-    if (!fMMIOBase || offset + 3 >= RTL8852BE_BAR2_SIZE) return;
+    if (!fMMIOBase || !fMMIOMap || !rtlMmioRangeValid(offset, 4, fMMIOMap->getLength())) return;
     *(volatile uint32_t *)(fMMIOBase + offset) = val;
 }
 
@@ -348,41 +407,63 @@ void RTL8852BE::mmio_write32_mask(uint32_t offset, uint32_t mask, uint32_t val) 
 
 // SWSI RF Access (Path A / Path B)
 uint32_t RTL8852BE::rf_read(uint8_t path, uint32_t addr, uint32_t mask) {
-    // Poll SWSI busy
-    for (int retry = 0; retry < 50; retry++) {
-        uint32_t st = mmio_read32(R_SWSI_V1);
-        if (!(st & (B_SWSI_W_BUSY_V1 | B_SWSI_R_BUSY_V1))) break;
-        IODelay(5);
+    // Linux v6.12 phy.c: rtw89_phy_read_rf_v1 / rtw89_phy_read_rf_a.
+    mask &= 0xfffff;
+    if (path > 1 || !mask || (addr & ~0x100ffU)) return 0xffffffff;
+    const uint32_t shift = __builtin_ctz(mask);
+    if (addr & 0x10000) {
+        const uint32_t base = path == 0 ? 0xe000 : 0xf000;
+        return (mmio_read32(base + ((addr & 0xff) << 2)) & mask) >> shift;
     }
-    uint32_t read_req = (path << B_SWSI_DATA_PATH_V1_SHIFT) | (addr & 0xFF);
-    mmio_write32(R_SWSI_READ_ADDR_V1, read_req);
-    for (int retry = 0; retry < 50; retry++) {
-        uint32_t st = mmio_read32(R_SWSI_V1);
-        if (st & B_SWSI_R_DATA_DONE_V1) break;
-        IODelay(5);
+    bool idle = false;
+    for (int retry = 0; retry < 30; ++retry) {
+        if (!(mmio_read32(R_SWSI_V1) & (B_SWSI_W_BUSY_V1 | B_SWSI_R_BUSY_V1))) {
+            idle = true;
+            break;
+        }
+        IODelay(1);
     }
-    uint32_t val = mmio_read32(R_SWSI_DATA_V1) & B_SWSI_DATA_VAL_V1_MASK;
-    return (val & mask);
+    if (!idle) return 0xffffffff;
+    const uint32_t request = (uint32_t(path) << B_SWSI_READ_ADDR_PATH_V1_SHIFT) | (addr & 0xff);
+    mmio_write32_mask(R_SWSI_READ_ADDR_V1, 0x7ff, request);
+    IODelay(2);
+    for (int retry = 0; retry < 30; ++retry) {
+        const uint32_t status = mmio_read32(R_SWSI_V1);
+        if (status & B_SWSI_R_DATA_DONE_V1) return (status & mask) >> shift;
+        IODelay(1);
+    }
+    return 0xffffffff;
 }
 
 bool RTL8852BE::rf_write(uint8_t path, uint32_t addr, uint32_t mask, uint32_t val) {
-    for (int retry = 0; retry < 50; retry++) {
-        uint32_t st = mmio_read32(R_SWSI_V1);
-        if (!(st & (B_SWSI_W_BUSY_V1 | B_SWSI_R_BUSY_V1))) break;
-        IODelay(5);
+    // Linux v6.12 phy.c: rtw89_phy_write_rf_v1 / rtw89_phy_write_rf_a.
+    mask &= 0xfffff;
+    if (path > 1 || !mask || (addr & ~0x100ffU)) return false;
+    val = (val << __builtin_ctz(mask)) & mask;
+    if (addr & 0x10000) {
+        const uint32_t base = path == 0 ? 0xe000 : 0xf000;
+        mmio_write32_mask(base + ((addr & 0xff) << 2), mask, val);
+        IODelay(1);
+        return true;
     }
-    if (mask != 0xFFFFF) {
-        mmio_write32(R_SWSI_BIT_MASK_V1, mask & 0xFFFFF);
+    bool idle = false;
+    for (int retry = 0; retry < 30; ++retry) {
+        if (!(mmio_read32(R_SWSI_V1) & (B_SWSI_W_BUSY_V1 | B_SWSI_R_BUSY_V1))) {
+            idle = true;
+            break;
+        }
+        IODelay(1);
     }
-    uint32_t req = ((mask != 0xFFFFF) ? B_SWSI_DATA_BIT_MASK_EN_V1 : 0) |
-                   (path << B_SWSI_DATA_PATH_V1_SHIFT) |
-                   ((addr & 0xFF) << B_SWSI_DATA_ADDR_V1_SHIFT) |
-                   (val & B_SWSI_DATA_VAL_V1_MASK);
-    mmio_write32(R_SWSI_DATA_V1, req);
+    if (!idle) return false;
+    if (mask != 0xfffff) mmio_write32_mask(R_SWSI_BIT_MASK_V1, 0xfffff, mask);
+    const uint32_t request = ((mask != 0xfffff) ? B_SWSI_DATA_BIT_MASK_EN_V1 : 0) |
+                             (uint32_t(path) << B_SWSI_DATA_PATH_V1_SHIFT) |
+                             ((addr & 0xff) << B_SWSI_DATA_ADDR_V1_SHIFT) | val;
+    mmio_write32(R_SWSI_DATA_V1, request);
     return true;
 }
 
-// PCI Wake, ASPM L1/L1.2 disable, Bus Mastering
+// Prototype PCI wake and Link Control ASPM configuration.
 bool RTL8852BE::pciWakeAndConfigure() {
     if (!fPCIDevice) return false;
 
@@ -397,7 +478,7 @@ bool RTL8852BE::pciWakeAndConfigure() {
         }
     }
 
-    // Disable PCIe ASPM L1 and L1ss to avoid crystal sleep freeze on Lenovo LOQ 82XV
+    // Clear Link Control ASPM L0s/L1. L1 substates are not configured here.
     UInt8 pcieCap = 0;
     fPCIDevice->findPCICapability(kIOPCIPCIExpressCapability, &pcieCap);
     if (pcieCap) {
@@ -414,106 +495,50 @@ bool RTL8852BE::pciWakeAndConfigure() {
     return true;
 }
 
-// Power Sequence
+// Complete RTL8852B power operations generated from the audited kernel source.
 bool RTL8852BE::powerOn() {
-    mmio_write32_mask(R_AX_SYS_PW_CTRL, B_AX_AFSM_WLSUS_EN | B_AX_AFSM_PCIE_SUS_EN, 0);
-    mmio_write32_mask(R_AX_SYS_PW_CTRL, B_AX_DIS_WLBT_PDNSUSEN_SOPC, B_AX_DIS_WLBT_PDNSUSEN_SOPC);
-    mmio_write32_mask(R_AX_WLLPS_CTRL, B_AX_DIS_WLBT_LPSEN_LOPC, B_AX_DIS_WLBT_LPSEN_LOPC);
-    mmio_write32_mask(R_AX_SYS_PW_CTRL, B_AX_APDM_HPDN | B_AX_APFM_SWLPS, 0);
-
-    // Poll for RDY_SYSPWR
-    bool ready = false;
-    for (int i = 0; i < 200; i++) {
-        if (mmio_read32(R_AX_SYS_PW_CTRL) & B_AX_RDY_SYSPWR) {
-            ready = true;
-            break;
-        }
-        IODelay(100);
-    }
-    if (!ready) {
-        IOLog("RTL8852BE: System power timeout!\n");
-        return false;
-    }
-
-    mmio_write32_mask(R_AX_AFE_LDO_CTRL, B_AX_AON_OFF_PC_EN, B_AX_AON_OFF_PC_EN);
-    IODelay(50);
-
-    mmio_write32_mask(R_AX_SYS_PW_CTRL, B_AX_EN_WLON | B_AX_APFN_ONMAC, B_AX_EN_WLON | B_AX_APFN_ONMAC);
-    for (int i = 0; i < 200; i++) {
-        if (!(mmio_read32(R_AX_SYS_PW_CTRL) & B_AX_APFN_ONMAC)) break;
-        IODelay(100);
-    }
-
-    // Toggle platform enable reset
-    mmio_write8(R_AX_PLATFORM_ENABLE, B_AX_PLATFORM_EN);
-    IODelay(10);
-    mmio_write8(R_AX_PLATFORM_ENABLE, 0);
-    IODelay(10);
-    mmio_write8(R_AX_PLATFORM_ENABLE, B_AX_PLATFORM_EN);
-    IODelay(20);
-
-    return true;
+    return rtl8852bPowerOn(registerIO(), fCutVersion, fCalib.rfe_type);
 }
 
 void RTL8852BE::powerOff() {
-    mmio_write32_mask(R_AX_SYS_PW_CTRL, B_AX_APFM_SWLPS, B_AX_APFM_SWLPS);
+    if (!rtl8852bPowerOff(registerIO(), fCutVersion, fCalib.rfe_type))
+        IOLog("RTL8852BE: Power-off handshake failed.\n");
 }
 
-// eFuse Parser
+RtlRegisterIO RTL8852BE::registerIO() {
+    return {this,
+        [](void *context, uint32_t address, uint32_t width, uint32_t *value) -> bool {
+            auto *me = static_cast<RTL8852BE *>(context);
+            if (!value || !me->fMMIOBase || !me->fMMIOMap ||
+                !rtlMmioRangeValid(address, width, me->fMMIOMap->getLength())) return false;
+            *value = width == 1 ? me->mmio_read8(address) :
+                     width == 2 ? me->mmio_read16(address) : me->mmio_read32(address);
+            return true;
+        },
+        [](void *context, uint32_t address, uint32_t width, uint32_t value) -> bool {
+            auto *me = static_cast<RTL8852BE *>(context);
+            if (!me->fMMIOBase || !me->fMMIOMap ||
+                !rtlMmioRangeValid(address, width, me->fMMIOMap->getLength())) return false;
+            if (width == 1) me->mmio_write8(address, uint8_t(value));
+            else if (width == 2) me->mmio_write16(address, uint16_t(value));
+            else me->mmio_write32(address, value);
+            return true;
+        },
+        [](void *, uint32_t us) { if (us >= 1000) IOSleep((us + 999) / 1000); else IODelay(us); }
+    };
+}
+
+// Physical OTP access and logical expansion follow Linux rtw89/efuse.c.
 bool RTL8852BE::readEfuse(RTL8852BECalibData &outCalib) {
-    uint8_t phys[EFUSE_PHYSICAL_SIZE_AX];
-    uint8_t log[EFUSE_LOGICAL_SIZE_AX];
-    memset(phys, 0xFF, sizeof(phys));
-    memset(log, 0xFF, sizeof(log));
-
-    // Check autoload status
-    uint16_t efuse_ctrl = mmio_read16(R_AX_SYS_WL_EFUSE_CTRL);
-    if (!(efuse_ctrl & B_AX_AUTOLOAD_SUS)) {
-        IOLog("RTL8852BE: eFuse autoload not ready, proceeding with hardware fallback.\n");
+    outCalib = {};
+    if (!(mmio_read16(R_AX_SYS_WL_EFUSE_CTRL) & B_AX_AUTOLOAD_SUS)) return false;
+    uint8_t physical[EFUSE_PHYSICAL_SIZE_AX], logical[EFUSE_LOGICAL_SIZE_AX];
+    if (!rtl8852bReadPhysicalEfuse(registerIO(), fCutVersion, physical, sizeof(physical)) ||
+        !rtl8852bExpandEfuse(physical, sizeof(physical), logical, sizeof(logical)) ||
+        !rtl8852bParseCalibration(logical, sizeof(logical), &outCalib)) {
+        IOLog("RTL8852BE: Invalid or unreadable physical eFuse; bring-up aborted.\n");
+        return false;
     }
-
-    // Simulated/Hardware physical read (fallback to card default if unprogrammed)
-    // Physical eFuse decoding into logical map
-    size_t phy_idx = 0;
-    while (phy_idx < EFUSE_PHYSICAL_SIZE_AX - 4) {
-        uint8_t hdr1 = phys[phy_idx];
-        uint8_t hdr2 = phys[phy_idx + 1];
-        if (INVALID_EFUSE_HEADER(hdr1, hdr2)) break;
-
-        uint8_t blk = GET_EFUSE_BLK_IDX(hdr1, hdr2);
-        uint8_t word_en = hdr2 & 0x0F;
-        phy_idx += 2;
-
-        for (int w = 0; w < 4; w++) {
-            if (INVALID_EFUSE_CONTENT(word_en, w)) continue;
-            size_t log_idx = BLOCK_IDX_TO_LOGICAL_IDX(blk, w);
-            if (log_idx + 1 < EFUSE_LOGICAL_SIZE_AX && phy_idx + 1 < EFUSE_PHYSICAL_SIZE_AX) {
-                log[log_idx] = phys[phy_idx];
-                log[log_idx + 1] = phys[phy_idx + 1];
-            }
-            phy_idx += 2;
-        }
-    }
-
-    // Default MAC address fallback if OTP not programmed
-    const uint8_t *mac_src = &log[EFUSE_MAC_ADDR_OFFSET_PCIE];
-    if (mac_src[0] == 0xFF && mac_src[1] == 0xFF && mac_src[2] == 0xFF) {
-        // Realtek OUI default
-        outCalib.mac_addr[0] = 0x1C;
-        outCalib.mac_addr[1] = 0x39;
-        outCalib.mac_addr[2] = 0x47;
-        outCalib.mac_addr[3] = (uint8_t)(fSubsysDevice >> 8);
-        outCalib.mac_addr[4] = (uint8_t)(fSubsysDevice & 0xFF);
-        outCalib.mac_addr[5] = 0xBE;
-    } else {
-        memcpy(outCalib.mac_addr, mac_src, 6);
-    }
-
-    outCalib.xtal_cap = log[EFUSE_XTAL_K_OFFSET];
-    if (outCalib.xtal_cap == 0xFF) outCalib.xtal_cap = 0x20;
-    outCalib.rfe_type = log[EFUSE_RFE_TYPE_OFFSET];
-    if (outCalib.rfe_type == 0xFF) outCalib.rfe_type = 0x05;
-
     return true;
 }
 
@@ -531,7 +556,7 @@ bool RTL8852BE::downloadFirmware() {
     IOLog("RTL8852BE: Target FW version %u.%u.%u.%u (%u sections)\n",
           info.major, info.minor, info.subver, info.subidx, info.section_count);
 
-    // Download sections through H2C or MMIO buffer
+    // Inspect parsed sections; no transport is implemented below.
     for (uint8_t s = 0; s < info.section_count; s++) {
         uint32_t dl_addr = info.sections[s].dl_addr;
         uint32_t len = info.sections[s].len;
@@ -541,44 +566,42 @@ bool RTL8852BE::downloadFirmware() {
             IOLog("RTL8852BE: Firmware section %u exceeds image bounds!\n", s);
             return false;
         }
-        // Verification / loading simulation for section
+        // Bounds inspection only, not a hardware transfer.
         IOLog("RTL8852BE: Section %u: DL_ADDR=0x%08x, LEN=%u bytes OK\n", s, dl_addr, len);
     }
 
-    // Verify Ready handshake
-    mmio_write32_mask(R_AX_MCUFW_CTRL, B_AX_MCUFWDL_RDY, B_AX_MCUFWDL_RDY);
-    IODelay(500);
-
-    fFwReady = true;
-    return true;
+    // Parsing is not a download. The H2C download transport and WCPU status
+    // handshake must be implemented before this may report firmware readiness.
+    fFwReady = false;
+    IOLog("RTL8852BE: Firmware transport is not implemented; bring-up aborted.\n");
+    return false;
 }
 
 // BB and RF Register Tables
 bool RTL8852BE::initBBAndRF() {
-    IOLog("RTL8852BE: Loading BB registers (%zu entries)...\n", RTL8852BE_PHY_BB_REGS_COUNT);
-    for (size_t i = 0; i < RTL8852BE_PHY_BB_REGS_COUNT; i++) {
-        mmio_write32(RTL8852BE_PHY_BB_REGS[i].addr, RTL8852BE_PHY_BB_REGS[i].val);
-    }
-
-    // RTL8852BE_PHY_BB_REG_GAIN entries are packed parameter arguments (type, path, band, cfg_type)
-    // used to configure internal LNA/TIA gain calibration structures in rtw89_phy_config_bb_gain_ax.
-    IOLog("RTL8852BE: Parsing BB gain calibration table (%zu entries)...\n", RTL8852BE_PHY_BB_REG_GAIN_COUNT);
-
-    IOLog("RTL8852BE: Loading Radio A RF registers (%zu entries)...\n", RTL8852BE_PHY_RADIOA_REGS_COUNT);
-    for (size_t i = 0; i < RTL8852BE_PHY_RADIOA_REGS_COUNT; i++) {
-        rf_write(0, RTL8852BE_PHY_RADIOA_REGS[i].addr, 0xFFFFF, RTL8852BE_PHY_RADIOA_REGS[i].val);
-    }
-
-    IOLog("RTL8852BE: Loading Radio B RF registers (%zu entries)...\n", RTL8852BE_PHY_RADIOB_REGS_COUNT);
-    for (size_t i = 0; i < RTL8852BE_PHY_RADIOB_REGS_COUNT; i++) {
-        rf_write(1, RTL8852BE_PHY_RADIOB_REGS[i].addr, 0xFFFFF, RTL8852BE_PHY_RADIOB_REGS[i].val);
-    }
-
-    for (size_t i = 0; i < RTL8852BE_PHY_NCTL_REGS_COUNT; i++) {
-        mmio_write32(RTL8852BE_PHY_NCTL_REGS[i].addr, RTL8852BE_PHY_NCTL_REGS[i].val);
-    }
-
-    return true;
+    auto bb = [](void *context, uint32_t address, uint32_t value) -> bool {
+        auto *me = static_cast<RTL8852BE *>(context);
+        if (!rtlMmioRangeValid(address, 4, RTL8852BE_BAR2_SIZE)) return false;
+        me->mmio_write32(address, value);
+        return true;
+    };
+    struct RfContext { RTL8852BE *driver; uint8_t path; } paths[] = {{this, 0}, {this, 1}};
+    auto rf = [](void *context, uint32_t address, uint32_t value) -> bool {
+        auto *path = static_cast<RfContext *>(context);
+        return path->driver->rf_write(path->path, address, 0xfffff, value);
+    };
+    if (!rtl8852bApplyPhyTable(RTL8852BE_PHY_BB_REGS, RTL8852BE_PHY_BB_REGS_COUNT,
+                             fCalib.rfe_type, fCutVersion, bb, this) ||
+        !rtl8852bApplyPhyTable(RTL8852BE_PHY_RADIOA_REGS, RTL8852BE_PHY_RADIOA_REGS_COUNT,
+                             fCalib.rfe_type, fCutVersion, rf, &paths[0]) ||
+        !rtl8852bApplyPhyTable(RTL8852BE_PHY_RADIOB_REGS, RTL8852BE_PHY_RADIOB_REGS_COUNT,
+                             fCalib.rfe_type, fCutVersion, rf, &paths[1]) ||
+        !rtl8852bApplyPhyTable(RTL8852BE_PHY_NCTL_REGS, RTL8852BE_PHY_NCTL_REGS_COUNT,
+                             fCalib.rfe_type, fCutVersion, bb, this)) return false;
+    // BB gain storage, RF H2C notification and RFK orchestration must be ported
+    // together. Completing table writes alone must not claim complete PHY setup.
+    IOLog("RTL8852BE: Table execution complete; gain/RFK integration is still unavailable.\n");
+    return false;
 }
 
 // DMA Ring Allocation & Programming
@@ -596,7 +619,7 @@ bool RTL8852BE::allocDMA(RTLDmaBuf &buf, size_t size, size_t alignment) {
         return false;
     }
 
-    IODMACommand::Segment64 seg;
+    IODMACommand::Segment64 seg = {};
     UInt64 offset = 0;
     UInt32 numSeg = 1;
     if (buf.cmd->gen64IOVMSegments(&offset, &seg, &numSeg) != kIOReturnSuccess ||
@@ -698,6 +721,7 @@ bool RTL8852BE::initDMARings() {
 }
 
 void RTL8852BE::freeDMARings() {
+    if (fPCIDevice) fPCIDevice->setBusMasterEnable(false);
     // Disable HCI if MMIO is mapped
     if (fMMIOBase) {
         mmio_write32_mask(R_AX_PCIE_INIT_CFG1, B_AX_TXHCI_EN | B_AX_RXHCI_EN, 0);
@@ -745,14 +769,16 @@ bool RTL8852BE::setChannel(uint8_t channel) {
 
 // Interrupt Management
 void RTL8852BE::enableInterrupts() {
-    fHIMRMask = B_AX_RXQ_RXBD_INT | B_AX_ACH0_TXBD_INT | B_AX_HALT_C2H_INT;
+    fHIMRMask = B_AX_RXQ_RXBD_INT | B_AX_ACH0_TXBD_INT;
     mmio_write32(R_AX_PCIE_HIMR00, fHIMRMask);
     fInterruptEnabled = true;
 }
 
 void RTL8852BE::disableInterrupts() {
     fHIMRMask = 0;
+    mmio_write32(R_AX_HIMR0, 0);
     mmio_write32(R_AX_PCIE_HIMR00, 0);
+    mmio_write32(R_AX_PCIE_HIMR10, 0);
     fInterruptEnabled = false;
 }
 
@@ -780,14 +806,17 @@ void RTL8852BE::interruptAction(OSObject *owner, IOInterruptEventSource *src, in
 
 void RTL8852BE::handleTxInterrupt() {
     // Read hardware read pointer
-    fTxRp = mmio_read16(R_AX_ACH0_TXBD_IDX);
+    const uint16_t rp = (mmio_read32(R_AX_ACH0_TXBD_IDX) >> 16) & 0xfff;
+    if (rp < RTL8852BE_TX_DESC_COUNT) fTxRp = rp;
 }
 
 void RTL8852BE::handleRxInterrupt() {
-    uint16_t hw_wp = mmio_read16(R_AX_RXQ_RXBD_IDX);
-    while (fRxRp != hw_wp) {
-        Rtw89RxBd &desc = fRxRingVirt[fRxRp];
+    if (!fHwReady || !fRxRingVirt || fRxRp >= RTL8852BE_RX_DESC_COUNT) return;
+    const uint16_t hw_wp = (mmio_read32(R_AX_RXQ_RXBD_IDX) >> 16) & 0xfff;
+    if (hw_wp >= RTL8852BE_RX_DESC_COUNT) return;
+    for (unsigned consumed = 0; fRxRp != hw_wp && consumed < RTL8852BE_RX_DESC_COUNT; ++consumed) {
         uint8_t *buf = (uint8_t *)fRxBufDma[fRxRp].virt;
+        if (!buf) return;
         Rtw89RxDesc *rx_desc = (Rtw89RxDesc *)buf;
 
         uint16_t pkt_len = rx_desc->get_pkt_len();
@@ -834,6 +863,7 @@ bool RTL8852BE::hwInit() {
 
 void RTL8852BE::hwDisable() {
     fHwReady = false;
+    fFwReady = false;
     disableInterrupts();
     freeDMARings();
     powerOff();
@@ -918,10 +948,13 @@ UInt32 RTL8852BE::outputPacket(mbuf_t m, void *param) {
 }
 
 bool RTL8852BE::transmitRawFrame(const uint8_t *frame, size_t len, uint8_t qsel, uint8_t rate) {
+    if (!fHwReady || !frame || !len || len > RTL8852BE_TX_BUF_SIZE - sizeof(Rtw89TxWd) ||
+        !fTxRingVirt || fTxWp >= RTL8852BE_TX_DESC_COUNT || fTxRp >= RTL8852BE_TX_DESC_COUNT) return false;
     uint16_t next_wp = (fTxWp + 1) % RTL8852BE_TX_DESC_COUNT;
     if (next_wp == fTxRp) return false; // Ring full
 
     uint8_t *buf = (uint8_t *)fTxBufDma[fTxWp].virt;
+    if (!buf) return false;
     Rtw89TxWd *wd = (Rtw89TxWd *)buf;
     wd->init((uint16_t)(40 + len), qsel, 0);
 
@@ -1004,38 +1037,7 @@ void RTL8852BE::sendProbeRequest() {
 }
 
 bool RTL8852BE::parseBeaconOrProbe(const uint8_t *frame, size_t len, RTL8852BEDiscoveredAP &outAP) {
-    if (len < 36) return false;
-    memset(&outAP, 0, sizeof(outAP));
-
-    memcpy(outAP.bssid, &frame[16], 6);
-    outAP.capabilities = frame[34] | (frame[35] << 8);
-
-    size_t pos = 36;
-    while (pos + 2 <= len) {
-        uint8_t ie_id = frame[pos];
-        uint8_t ie_len = frame[pos + 1];
-        pos += 2;
-        if (pos + ie_len > len) break;
-
-        if (ie_id == 0) { // SSID
-            size_t copy_len = (ie_len < RTL8852BE_MAX_SSID_LEN) ? ie_len : RTL8852BE_MAX_SSID_LEN;
-            memcpy(outAP.ssid, &frame[pos], copy_len);
-            outAP.ssid[copy_len] = '\0';
-        } else if (ie_id == 3) { // DS Parameter
-            outAP.channel = frame[pos];
-        } else if (ie_id == 48) { // RSN (WPA2)
-            outAP.is_wpa2 = 1;
-        } else if (ie_id == 255) { // HE Element (Wi-Fi 6)
-            if (ie_len >= 1 && frame[pos] == 35) { // HE Capabilities
-                outAP.is_wifi6 = 1;
-            }
-        }
-        pos += ie_len;
-    }
-
-    if (outAP.channel == 0) outAP.channel = fCurrentChannel;
-    outAP.is_5ghz = (outAP.channel > 14) ? 1 : 0;
-    return true;
+    return rtl8852beParseBeacon(frame, len, fCurrentChannel, &outAP);
 }
 
 void RTL8852BE::processRxFrame(const uint8_t *frame, size_t len, int8_t rssi) {
@@ -1197,11 +1199,11 @@ void RTL8852BE::handleDeauthFrame(const uint8_t *frame, size_t len) {
 
 void RTL8852BE::handleEAPOLFrame(const uint8_t *frame, size_t len, size_t hdrLen) {
     if (fWifiState != kRTLStateHandshake && fWifiState != kRTLStateConnected) return;
-    const uint8_t *eapol = frame + hdrLen;
-    size_t eapol_len = len - hdrLen;
-    if (eapol_len < 95) return;
-
-    uint16_t key_info = (eapol[5] << 8) | eapol[6];
+    RTL8852BEEapolView view;
+    if (!rtl8852beParseEapol(frame, len, hdrLen, &view)) return;
+    const uint8_t *eapol = view.packet;
+    const size_t eapol_len = view.packetLen;
+    const uint16_t key_info = view.keyInfo;
     bool is_pairwise = (key_info & (1 << 3)) != 0;
     bool is_install = (key_info & (1 << 6)) != 0;
     bool is_ack = (key_info & (1 << 7)) != 0;
@@ -1215,10 +1217,10 @@ void RTL8852BE::handleEAPOLFrame(const uint8_t *frame, size_t len, size_t hdrLen
     if (is_pairwise && is_ack && !is_mic) {
         // Message 1 of 4: Extract ANonce, generate SNonce, derive PTK, send Message 2
         IOLog("RTL8852BE: WPA2 4-Way Handshake Message 1 received.\n");
+        // Kernel entropy, as used in the RTL8723BE reference.
+        if (fKeyInstalled || replay <= fLastReplayCounter) return;
         memcpy(fANonce, &eapol[17], 32);
-
-        // Deterministic PRNG / random nonce for SNonce
-        for (int i = 0; i < 32; i++) fSNonce[i] = (uint8_t)(fInitStage ^ (i * 7) ^ fCalib.mac_addr[i % 6]);
+        read_random(fSNonce, sizeof(fSNonce));
 
         // Derive PTK (PRF-512)
         rtl_crypto::prf_512(fPMK, "Pairwise key expansion",
@@ -1229,11 +1231,11 @@ void RTL8852BE::handleEAPOLFrame(const uint8_t *frame, size_t len, size_t hdrLen
 
         // Send Message 2 of 4 (Key Info: 0x010A = Pairwise, MIC, Descriptor Version 2)
         sendEAPOLFrame(0x010A, &eapol[9], fSNonce, nullptr, nullptr, 0);
-    } else if (is_pairwise && is_install && is_mic) {
+    } else if (is_pairwise && is_install && is_ack && is_mic) {
         // Message 3 of 4: Verify MIC, unwrap GTK, send Message 4, install PTK/GTK
         IOLog("RTL8852BE: WPA2 4-Way Handshake Message 3 received.\n");
 
-        if (replay <= fLastReplayCounter && fKeyInstalled) return;
+        if (replay <= fLastReplayCounter || memcmp(eapol + 17, fANonce, 32) != 0) return;
 
         uint8_t verify[512];
         if (eapol_len > sizeof(verify)) return;
@@ -1333,6 +1335,7 @@ void RTL8852BE::sendAssocFrame() {
 void RTL8852BE::sendEAPOLFrame(uint16_t key_info, const uint8_t *key_replay, const uint8_t *snonce,
                               const uint8_t *mic, const uint8_t *key_data, size_t key_data_len) {
     uint8_t frame[256];
+    if (key_data_len > sizeof(frame) - 34 - 99 || (key_data_len && !key_data)) return;
     memset(frame, 0, sizeof(frame));
 
     // 802.11 QoS Data header
@@ -1380,7 +1383,7 @@ void RTL8852BE::sendEAPOLFrame(uint16_t key_info, const uint8_t *key_replay, con
 
 // User Client Dispatch Helpers
 IOReturn RTL8852BE::connectToNetwork(const char *ssid, const char *passphrase, const uint8_t *bssid) {
-    if (!ssid || strlen(ssid) == 0) return kIOReturnBadArgument;
+    if (!rtl8852beConnectStringsValid(ssid, passphrase)) return kIOReturnBadArgument;
     if (!fCommandGate || !fHwReady) return kIOReturnNotReady;
 
     char safe_ssid[RTL8852BE_MAX_SSID_LEN + 1];
@@ -1397,12 +1400,7 @@ IOReturn RTL8852BE::connectToNetwork(const char *ssid, const char *passphrase, c
         has_pmk = true;
     }
 
-    struct ConnectArgs {
-        const char *ssid;
-        const uint8_t *bssid;
-        const uint8_t *pmk;
-        bool has_pmk;
-    } args = { safe_ssid, bssid, has_pmk ? pmk : nullptr, has_pmk };
+    ConnectArgs args = { safe_ssid, bssid, has_pmk ? pmk : nullptr, has_pmk };
 
     IOReturn ret = fCommandGate->runAction(&RTL8852BE::gatedConnect, &args);
     memset(pmk, 0, sizeof(pmk));
@@ -1413,12 +1411,7 @@ IOReturn RTL8852BE::gatedConnect(OSObject *owner, void *arg0, void *arg1, void *
     RTL8852BE *me = OSDynamicCast(RTL8852BE, owner);
     if (!me || !me->fHwReady) return kIOReturnNotReady;
 
-    struct ConnectArgs {
-        const char *ssid;
-        const uint8_t *bssid;
-        const uint8_t *pmk;
-        bool has_pmk;
-    } *args = (struct ConnectArgs *)arg0;
+    const ConnectArgs *args = (const ConnectArgs *)arg0;
     if (!args) return kIOReturnBadArgument;
 
     strncpy(me->fTargetSSID, args->ssid, RTL8852BE_MAX_SSID_LEN);
@@ -1444,6 +1437,9 @@ IOReturn RTL8852BE::gatedConnect(OSObject *owner, void *arg0, void *arg1, void *
     me->setChannel(me->fTargetChannel);
     me->fWifiState = kRTLStateAuthenticating;
     me->fKeyInstalled = false;
+    me->fSecured = false;
+    memset(me->fPTK, 0, sizeof(me->fPTK));
+    memset(me->fGTK, 0, sizeof(me->fGTK));
     me->fLastReplayCounter = 0;
     me->sendAuthFrame();
     return kIOReturnSuccess;
@@ -1460,6 +1456,11 @@ IOReturn RTL8852BE::gatedDisconnect(OSObject *owner, void *arg0, void *arg1, voi
     me->fWifiState = kRTLStateDisconnected;
     me->fSecured = false;
     me->fKeyInstalled = false;
+    memset(me->fPMK, 0, sizeof(me->fPMK));
+    memset(me->fPTK, 0, sizeof(me->fPTK));
+    memset(me->fGTK, 0, sizeof(me->fGTK));
+    if (me->fScanTimer) me->fScanTimer->cancelTimeout();
+    me->setLinkStatus(kIONetworkLinkValid, nullptr);
     return kIOReturnSuccess;
 }
 
@@ -1472,9 +1473,9 @@ IOReturn RTL8852BE::gatedSetAntenna(OSObject *owner, void *arg0, void *arg1, voi
     RTL8852BE *me = OSDynamicCast(RTL8852BE, owner);
     if (!me) return kIOReturnBadArgument;
     uint8_t ant = (uint8_t)(uintptr_t)arg0;
-    me->fAntennaMode = ant;
-    IOLog("RTL8852BE: Antenna mode set to %u (0=2x2 Auto, 1=Path A, 2=Path B)\n", ant);
-    return kIOReturnSuccess;
+    if (ant > 2) return kIOReturnBadArgument;
+    // RF path selection is not implemented; do not report a successful switch.
+    return kIOReturnUnsupported;
 }
 
 IOReturn RTL8852BE::getScanResults(RTL8852BEScanResults *outResults) {
@@ -1491,10 +1492,10 @@ IOReturn RTL8852BE::getStatus(RTL8852BEStatus *outStatus) {
     memcpy(outStatus->connected_bssid, fTargetBSSID, 6);
     outStatus->channel = fCurrentChannel;
     outStatus->is_5ghz = (fCurrentChannel > 14) ? 1 : 0;
-    outStatus->is_wifi6 = 1;
+    outStatus->is_wifi6 = 0; // Negotiated HE capability is not implemented.
     outStatus->ant_mode = fAntennaMode;
-    outStatus->tx_rate_mbps = (fWifiState == kRTLStateConnected) ? 1200 : 0;
-    outStatus->rx_rate_mbps = (fWifiState == kRTLStateConnected) ? 1200 : 0;
+    outStatus->tx_rate_mbps = 0; // Unknown until obtained from hardware.
+    outStatus->rx_rate_mbps = 0;
     return kIOReturnSuccess;
 }
 
@@ -1504,7 +1505,7 @@ IOReturn RTL8852BE::getDiag(RTL8852BEDiag *outDiag) {
 
     outDiag->version = RTL8852BE_DIAG_VERSION;
     outDiag->init_stage = fInitStage;
-    outDiag->fw_version = 0x001B2001; // 0.27.32.1
+    outDiag->fw_version = 0; // No firmware has been booted by this prototype.
     outDiag->pci_device_id = fPciDeviceId;
     outDiag->himr = fHIMRMask;
     outDiag->hisr = mmio_read32(R_AX_PCIE_HISR00);
@@ -1528,7 +1529,7 @@ IOReturn RTL8852BE::getDiag(RTL8852BEDiag *outDiag) {
     outDiag->ant_mode = fAntennaMode;
     outDiag->channel = fCurrentChannel;
     outDiag->is_5ghz = (fCurrentChannel > 14) ? 1 : 0;
-    outDiag->wifi_generation = 6;
+    outDiag->wifi_generation = 0; // Negotiated generation unknown.
     outDiag->subsys_vendor = fSubsysVendor;
     outDiag->subsys_device = fSubsysDevice;
     outDiag->rx_bytes = fRxBytes;
@@ -1538,7 +1539,7 @@ IOReturn RTL8852BE::getDiag(RTL8852BEDiag *outDiag) {
 }
 
 IOReturn RTL8852BE::diagReadReg(uint32_t addr, uint32_t width, uint32_t *outValue) {
-    if (!outValue || addr >= RTL8852BE_BAR2_SIZE) return kIOReturnBadArgument;
+    if (!outValue || !rtlMmioRangeValid(addr, width, RTL8852BE_BAR2_SIZE)) return kIOReturnBadArgument;
     switch (width) {
         case 1: *outValue = mmio_read8(addr); break;
         case 2: *outValue = mmio_read16(addr); break;
@@ -1549,7 +1550,7 @@ IOReturn RTL8852BE::diagReadReg(uint32_t addr, uint32_t width, uint32_t *outValu
 }
 
 IOReturn RTL8852BE::diagWriteReg(uint32_t addr, uint32_t width, uint32_t value) {
-    if (addr >= RTL8852BE_BAR2_SIZE) return kIOReturnBadArgument;
+    if (!rtlMmioRangeValid(addr, width, RTL8852BE_BAR2_SIZE)) return kIOReturnBadArgument;
     if (!fCommandGate) return kIOReturnNotAttached;
     return fCommandGate->runAction(&RTL8852BE::gatedDiagWriteReg, (void *)(uintptr_t)addr, (void *)(uintptr_t)width, (void *)(uintptr_t)value);
 }
@@ -1601,10 +1602,7 @@ IOReturn RTL8852BE::gatedTriggerIQK(OSObject *owner, void *arg0, void *arg1, voi
     RTL8852BE *me = OSDynamicCast(RTL8852BE, owner);
     if (!me) return kIOReturnBadArgument;
     uint32_t *outResult = (uint32_t *)arg0;
-    me->rf_write(0, RR_LCKST, RR_LCKST_BIN, 0);
-    me->rf_write(0, RR_LCKST, RR_LCKST_BIN, 1);
-    me->rf_write(1, RR_LCKST, RR_LCKST_BIN, 0);
-    me->rf_write(1, RR_LCKST, RR_LCKST_BIN, 1);
-    if (outResult) *outResult = 0x03; // Both Path A and Path B calibrated
-    return kIOReturnSuccess;
+    if (outResult) *outResult = 0;
+    // Toggling LC lock is not IQ calibration.
+    return kIOReturnUnsupported;
 }

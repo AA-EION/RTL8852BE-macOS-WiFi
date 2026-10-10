@@ -30,7 +30,7 @@ static inline void rtl_close_client(io_connect_t conn) {
 static inline int rtl_get_status(io_connect_t conn, struct RTL8852BEStatus *outStatus) {
     size_t outSize = sizeof(struct RTL8852BEStatus);
     kern_return_t kr = IOConnectCallStructMethod(conn, kMethodGetStatus, NULL, 0, outStatus, &outSize);
-    return (kr == KERN_SUCCESS) ? 0 : (int)kr;
+    return (kr == KERN_SUCCESS && outSize == sizeof(*outStatus)) ? 0 : (kr == KERN_SUCCESS ? kIOReturnBadArgument : (int)kr);
 }
 
 static inline int rtl_trigger_scan(io_connect_t conn) {
@@ -41,7 +41,7 @@ static inline int rtl_trigger_scan(io_connect_t conn) {
 static inline int rtl_get_scan_results(io_connect_t conn, struct RTL8852BEScanResults *outResults) {
     size_t outSize = sizeof(struct RTL8852BEScanResults);
     kern_return_t kr = IOConnectCallStructMethod(conn, kMethodGetScanResults, NULL, 0, outResults, &outSize);
-    return (kr == KERN_SUCCESS) ? 0 : (int)kr;
+    return (kr == KERN_SUCCESS && outSize == sizeof(*outResults)) ? 0 : (kr == KERN_SUCCESS ? kIOReturnBadArgument : (int)kr);
 }
 
 static inline int rtl_connect_ap(io_connect_t conn, const struct RTL8852BEConnectParams *params) {
@@ -63,7 +63,7 @@ static inline int rtl_set_antenna(io_connect_t conn, uint8_t ant) {
 static inline int rtl_get_diag(io_connect_t conn, struct RTL8852BEDiag *outDiag) {
     size_t outSize = sizeof(struct RTL8852BEDiag);
     kern_return_t kr = IOConnectCallStructMethod(conn, kMethodGetDiag, NULL, 0, outDiag, &outSize);
-    return (kr == KERN_SUCCESS) ? 0 : (int)kr;
+    return (kr == KERN_SUCCESS && outSize == sizeof(*outDiag)) ? 0 : (kr == KERN_SUCCESS ? kIOReturnBadArgument : (int)kr);
 }
 
 /* Copies the BSD name (e.g. "en2") of the driver's network interface. */

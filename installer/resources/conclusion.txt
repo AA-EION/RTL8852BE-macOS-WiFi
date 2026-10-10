@@ -1,14 +1,8 @@
-Installed.
+Development artifacts installed.
 
-1. Open "RTL8852BE Wireless Utility" and click "Load Driver…" (asks for your password).
-2. The first time (and after each update) macOS asks you to allow the driver in
-   System Settings → Privacy & Security. Allow it, restart, and click "Load Driver…"
-   again after logging in.
-3. Click Scan, choose your network and enter its password — or in Terminal:
+The app and CLI are available for development. Hardware loading is blocked
+until firmware, eFuse, AX DMA, and remaining kernel-source audit findings
+are resolved. This package does not enable Wi-Fi connectivity.
 
-       rtl8852be_cli scan
-       rtl8852be_cli connect "Network Name" 'password'
-
-Load the driver again after each restart. The connection appears as a wired
-network port (en*), not in the Wi-Fi menu. To remove everything, run uninstall.sh
-from the disk image with sudo.
+Read docs/AUDIT.md in the source repository for findings and validation limits.
+To remove the installed artifacts, use uninstall.sh from the disk image.

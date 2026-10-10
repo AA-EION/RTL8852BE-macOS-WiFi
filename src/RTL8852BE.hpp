@@ -1,5 +1,6 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-2.0-only
 // Copyright (c) 2026 Issen Software Group
+// Copyright (c) 2020-2022 Realtek Corporation
 // Realtek RTL8852BE macOS Driver (Wi-Fi 6 802.11ax PCIe)
 // Based on Linux drivers/net/wireless/realtek/rtw89 (rtw8852be, rtw8852b, pci.c, mac.c, phy.c, fw.c, efuse.c)
 
@@ -43,12 +44,7 @@ struct RTLDmaBuf {
     size_t                    size;
 };
 
-struct RTL8852BECalibData {
-    uint8_t mac_addr[6];
-    uint8_t xtal_cap;
-    uint8_t rfe_type;
-    uint8_t country_code[2];
-};
+#include "RTL8852BE_efuse.hpp"
 
 class RTL8852BE : public IOEthernetController {
     OSDeclareDefaultStructors(RTL8852BE);
@@ -71,7 +67,8 @@ public:
     virtual IOOutputQueue *createOutputQueue() override;
     virtual bool configureInterface(IONetworkInterface *netif) override;
 
-    // UserClient Control APIs (serialized through fCommandGate)
+    // UserClient control APIs; mutations use fCommandGate. Read serialization
+    // against teardown remains a bring-up requirement (see docs/AUDIT.md).
     IOCommandGate *getCommandGate() const { return fCommandGate; }
     IOReturn triggerScan();
     IOReturn getScanResults(RTL8852BEScanResults *outResults);
@@ -108,6 +105,12 @@ public:
     static void scanTimerAction(OSObject *owner, IOTimerEventSource *timer);
 
 private:
+    struct ConnectArgs {
+        const char *ssid;
+        const uint8_t *bssid;
+        const uint8_t *pmk;
+        bool has_pmk;
+    };
     // Gated entry points (executed on workloop)
     static IOReturn gatedScan(OSObject *owner, void *arg0, void *arg1, void *arg2, void *arg3);
     static IOReturn gatedConnect(OSObject *owner, void *arg0, void *arg1, void *arg2, void *arg3);
@@ -125,6 +128,7 @@ private:
     bool powerOn();
     void powerOff();
     bool readEfuse(RTL8852BECalibData &outCalib);
+    RtlRegisterIO registerIO();
     bool downloadFirmware();
     bool initBBAndRF();
     bool initDMARings();

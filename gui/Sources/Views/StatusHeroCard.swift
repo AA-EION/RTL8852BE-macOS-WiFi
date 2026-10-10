@@ -53,10 +53,10 @@ struct StatusHeroCard: View {
         case .connecting:
             return "Authenticating and running the WPA2 handshake…"
         case .scanning:
-            return "Listening on 2.4 GHz channels 1–13…"
+            return "Listening on 2.4 GHz and 5 GHz channels…"
         case .disconnected:
             return model.networks.isEmpty
-                ? "Click Scan to look for nearby 2.4 GHz networks."
+                ? "Click Scan to look for nearby wireless networks."
                 : "\(model.networks.count) networks nearby. Pick one on the Networks page."
         case .noDriver:
             return "The RTL8852BE driver is not loaded."

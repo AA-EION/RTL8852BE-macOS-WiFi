@@ -36,13 +36,7 @@ struct ContentView: View {
     @SceneStorage("selectedPane") private var pane: Pane = .overview
 
     var body: some View {
-        Group {
-            if model.driverLoaded {
-                mainSplit
-            } else {
-                OnboardingView(model: model)
-            }
-        }
+        mainSplit
         .animation(.smooth(duration: 0.25), value: model.driverLoaded)
         .alert("RTL8852BE Wi-Fi",
                isPresented: Binding(get: { model.alertMessage != nil },
@@ -90,10 +84,14 @@ struct ContentView: View {
     private var detail: some View {
         switch pane {
         case .overview:
-            Page {
-                StatusHeroCard(model: model)
-                ThroughputCard(model: model)
-                ConnectionCard(model: model) { pane = .networks }
+            if model.driverLoaded {
+                Page {
+                    StatusHeroCard(model: model)
+                    ThroughputCard(model: model)
+                    ConnectionCard(model: model) { pane = .networks }
+                }
+            } else {
+                OnboardingView(model: model)
             }
         case .networks:
             Page { NetworksCard(model: model) }
@@ -125,6 +123,7 @@ struct Page<Content: View>: View {
 }
 
 /// The one primary action, always in the toolbar: Scan, or Disconnect while connected.
+@MainActor
 struct PrimaryActionButton: View {
     @Bindable var model: AppModel
     var showNetworks: () -> Void = {}
@@ -159,6 +158,7 @@ struct PrimaryActionButton: View {
 }
 
 /// Compact live status at the bottom of the sidebar.
+@MainActor
 private struct SidebarStatus: View {
     var model: AppModel
 
