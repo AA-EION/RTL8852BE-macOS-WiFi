@@ -4,6 +4,7 @@
 import SwiftUI
 
 /// Live throughput of the Wi-Fi interface, measured from the interface byte counters.
+@MainActor
 struct ThroughputCard: View {
     var model: AppModel
 
@@ -27,6 +28,7 @@ struct ThroughputCard: View {
 }
 
 /// Read-only connection details, linking to the Networks page.
+@MainActor
 struct ConnectionCard: View {
     var model: AppModel
     let showNetworks: () -> Void

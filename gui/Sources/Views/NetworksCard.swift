@@ -4,6 +4,7 @@
 import SwiftUI
 
 /// Nearby networks from the last scan; click one to join.
+@MainActor
 struct NetworksCard: View {
     @Bindable var model: AppModel
     @State private var joinTarget: WiFiNetwork?

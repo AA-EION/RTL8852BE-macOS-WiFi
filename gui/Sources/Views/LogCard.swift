@@ -6,6 +6,7 @@ import AppKit
 import SwiftUI
 
 /// The activity log: filterable, auto-scrolling, one-click copy for bug reports.
+@MainActor
 struct LogCard: View {
     @Bindable var model: AppModel
     @State private var autoScroll = true

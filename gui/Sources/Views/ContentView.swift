@@ -30,6 +30,7 @@ enum Pane: String, CaseIterable, Identifiable, Hashable {
     }
 }
 
+@MainActor
 struct ContentView: View {
     @Bindable var model: AppModel
     @SceneStorage("selectedPane") private var pane: Pane = .overview

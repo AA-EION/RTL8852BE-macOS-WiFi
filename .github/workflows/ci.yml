@@ -49,12 +49,10 @@ jobs:
           if [ -f gui/AppIcon.icns ]; then
             cp gui/AppIcon.icns "build/RTL8852BE Wireless Utility.app/Contents/Resources/AppIcon.icns"
           fi
-          swiftc -target x86_64-apple-macos14.0 -O \
+          swiftc -target x86_64-apple-macosx14.0 -O -parse-as-library -swift-version 5 \
             -import-objc-header gui/RTL8852BEBridge.h \
-            gui/Sources/App.swift \
-            gui/Sources/AppModel.swift \
-            gui/Sources/DesignSystem.swift \
-            gui/Sources/Vendor.swift \
+            -framework AppKit -framework SwiftUI -framework IOKit -framework ServiceManagement \
+            gui/Sources/*.swift \
             gui/Sources/Views/*.swift \
             -o "build/RTL8852BE Wireless Utility.app/Contents/MacOS/RTL8852BEWirelessUtility"
 

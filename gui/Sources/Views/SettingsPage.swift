@@ -7,6 +7,7 @@ import ServiceManagement
 import SwiftUI
 
 /// Everything about the driver and the app itself.
+@MainActor
 struct SettingsPage: View {
     @Bindable var model: AppModel
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled

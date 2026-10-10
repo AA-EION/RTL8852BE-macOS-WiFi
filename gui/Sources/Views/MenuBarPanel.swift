@@ -6,6 +6,7 @@ import AppKit
 import SwiftUI
 
 /// The small panel behind the menu bar icon: status at a glance plus quick actions.
+@MainActor
 struct MenuBarPanel: View {
     var model: AppModel
     @Environment(\.openWindow) private var openWindow

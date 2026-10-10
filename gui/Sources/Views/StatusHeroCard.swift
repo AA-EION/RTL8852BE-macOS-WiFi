@@ -5,6 +5,7 @@
 import SwiftUI
 
 /// The main status card: is it connected, to what, and with which address.
+@MainActor
 struct StatusHeroCard: View {
     @Bindable var model: AppModel
 

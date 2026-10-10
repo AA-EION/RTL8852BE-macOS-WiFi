@@ -5,6 +5,7 @@ import AppKit
 import SwiftUI
 
 /// Shown until the driver is running: walks through the three things it needs.
+@MainActor
 struct OnboardingView: View {
     @Bindable var model: AppModel
 
