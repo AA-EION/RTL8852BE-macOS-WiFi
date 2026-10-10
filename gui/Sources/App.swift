@@ -5,6 +5,7 @@ import AppKit
 import SwiftUI
 
 @main
+@MainActor
 struct RTL8852BEWiFiApp: App {
     @State private var model = AppModel()
 
